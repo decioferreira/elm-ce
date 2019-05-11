@@ -1,4 +1,4 @@
-module Main exposing (main, onePlusOne)
+module Main exposing (main)
 
 
 addOne : Int -> Int

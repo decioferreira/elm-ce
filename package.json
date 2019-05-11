@@ -3,14 +3,16 @@
   "scripts": {
     "elm-evancz": "elm make specs/assets/elm/Main.elm --optimize --output=tmp/specs-elm-evancz.js",
     "postelm-evancz": "sed -ri 's/(var )?author\\$project\\$Main\\$/scope\\./g' tmp/specs-elm-evancz.js",
-    "preelm-ce": "elm make src/Main.elm --optimize --output=tmp/elm-ce.js",
+    "preelm-ce": "elm make src/Main.elm --output=tmp/elm-ce.js",
     "elm-ce": "./lib/tasks/elm-ce-make.js specs/assets/elm/Main.elm --output=tmp/specs-elm-ce.js",
+    "elm-test": "elm-test src/**/*.elm",
     "prespec": "yarn elm-evancz && yarn elm-ce",
     "spec": "jest"
   },
   "devDependencies": {
     "coffee": "^5.2.1",
     "elm": "^0.19.0-bugfix6",
+    "elm-test": "^0.19.0-rev6",
     "jest": "^24.8.0",
     "prettier": "1.17.0"
   },
