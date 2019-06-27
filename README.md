@@ -1,5 +1,7 @@
 # elm Community Edition [Alpha]
 
+[![Build Status](https://travis-ci.org/decioferreira/elm-ce.svg?branch=master)](https://travis-ci.org/decioferreira/elm-ce)
+
 > A little info about your project and/or overview that explains what the project is about.
 
 ## Motivation
