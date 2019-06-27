@@ -11,7 +11,7 @@
     "prespec": "yarn elm-evancz && yarn elm-ce",
     "spec": "jest",
 
-    "test": "yarn elm-test; yarn spec"
+    "test": "yarn elm-test && yarn spec"
   },
   "devDependencies": {
     "coffee": "^5.2.1",
