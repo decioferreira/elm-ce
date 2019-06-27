@@ -2,12 +2,16 @@
   "license": "BSD-3-Clause",
   "scripts": {
     "elm-evancz": "elm make specs/assets/elm/Main.elm --optimize --output=tmp/specs-elm-evancz.js",
-    "postelm-evancz": "sed -ri 's/(var )?author\\$project\\$Main\\$/scope\\./g' tmp/specs-elm-evancz.js",
-    "preelm-ce": "elm make src/Main.elm --output=tmp/elm-ce.js",
+
+    "preelm-ce": "elm make src/Main.elm --optimize --output=tmp/elm-ce.js",
     "elm-ce": "./lib/tasks/elm-ce-make.js specs/assets/elm/Main.elm --output=tmp/specs-elm-ce.js",
+
     "elm-test": "elm-test src/**/*.elm",
+
     "prespec": "yarn elm-evancz && yarn elm-ce",
-    "spec": "jest"
+    "spec": "jest",
+
+    "test": "yarn elm-test; yarn spec"
   },
   "devDependencies": {
     "coffee": "^5.2.1",

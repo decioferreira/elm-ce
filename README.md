@@ -1,4 +1,4 @@
-# ELM Community Edition [Alpha]
+# elm Community Edition [Alpha]
 
 > A little info about your project and/or overview that explains what the project is about.
 
