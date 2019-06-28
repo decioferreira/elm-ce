@@ -56,27 +56,11 @@ update : Msg -> () -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         Convert content ->
-            let
-                _ =
-                    Parser.run chompModule content
-            in
-            if String.startsWith "module lowercase" content then
-                ( model
-                , convertedFail
-                    """-- PARSE ERROR ---------------- specs/assets/elm/Parser/ModuleName/lowercase.elm
-
-Something went wrong while parsing a module declaration.
-
-1| module lowercase exposing (foo)
-          ^
-I was expecting to see something like `exposing (..)`
-"""
-                )
-
-            else
-                let
-                    code =
-                        """this.Elm = {
+            case Parser.run chompModule content of
+                Ok _ ->
+                    let
+                        code =
+                            """this.Elm = {
   Main: {
     init: function() {
       return {
@@ -102,8 +86,21 @@ I was expecting to see something like `exposing (..)`
     }
   }
 };"""
-                in
-                ( model, convertedSuccess { message = "Success! Compiled 1 module.", code = code } )
+                    in
+                    ( model, convertedSuccess { message = "Success! Compiled 1 module.", code = code } )
+
+                Err _ ->
+                    ( model
+                    , convertedFail
+                        """-- PARSE ERROR ---------------- specs/assets/elm/Parser/ModuleName/lowercase.elm
+
+Something went wrong while parsing a module declaration.
+
+1| module lowercase exposing (foo)
+          ^
+I was expecting to see something like `exposing (..)`
+"""
+                    )
 
 
 
@@ -243,8 +240,8 @@ moduleNameHelp : ( String, List String ) -> ElmParser (Step ( String, List Strin
 moduleNameHelp ( topModuleName, revModuleNames ) =
     Parser.oneOf
         [ Parser.succeed (\name -> Loop ( topModuleName, name :: revModuleNames ))
-            |= moduleNameWithoutDots
             |. Parser.symbol (Parser.Token "." ModuleName)
+            |= moduleNameWithoutDots
         , Parser.succeed ()
             |> Parser.map (\_ -> Done ( topModuleName, List.reverse revModuleNames ))
         ]
@@ -292,5 +289,19 @@ checkFreshLine =
 
 allTests : Test
 allTests =
-    -- Test.test "This test will be run" (\_ -> Expect.equal 2 (1 + 1))
-    Test.todo "Implement our first test. See https://package.elm-lang.org/packages/elm-explorations/test/latest for how to do this!"
+    moduleNameTests
+
+
+moduleNameTests : Test
+moduleNameTests =
+    Test.describe "moduleName"
+        [ Test.test "Main" <|
+            \_ ->
+                Expect.equal (Parser.run moduleName "Main") (Ok ( "Main", [] ))
+        , Test.test "lowercase" <|
+            \_ ->
+                Expect.equal (Parser.run moduleName "lowercase") (Err [ { col = 1, contextStack = [], problem = ModuleName, row = 1 } ])
+        , Test.test "Nested.Module.Name" <|
+            \_ ->
+                Expect.equal (Parser.run moduleName "Nested.Module.Name") (Ok ( "Nested", [ "Module", "Name" ] ))
+        ]
