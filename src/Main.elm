@@ -1,9 +1,13 @@
 port module Main exposing (allTests, main)
 
 import Expect
-import Parser exposing ((|.), (|=), Parser, Step(..))
+import Parser.Advanced as Parser exposing ((|.), (|=), Parser, Step(..), Token)
 import Set
 import Test exposing (Test)
+
+
+
+-- PORTS
 
 
 port convert : (String -> msg) -> Sub msg
@@ -15,8 +19,8 @@ port convertedSuccess : { message : String, code : String } -> Cmd msg
 port convertedFail : String -> Cmd msg
 
 
-type alias Model =
-    ()
+
+-- MAIN
 
 
 main : Program () Model Msg
@@ -28,14 +32,34 @@ main =
         }
 
 
+
+-- MODEL
+
+
+type alias Model =
+    ()
+
+
+
+-- MSG
+
+
 type Msg
     = Convert String
+
+
+
+-- UPDATE
 
 
 update : Msg -> () -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         Convert content ->
+            let
+                _ =
+                    Parser.run chompModule content
+            in
             if String.startsWith "module lowercase" content then
                 ( model
                 , convertedFail
@@ -51,9 +75,6 @@ I was expecting to see something like `exposing (..)`
 
             else
                 let
-                    -- _ =
-                    --     Parser.run module_ content
-                    --         |> Debug.log "parsed module..."
                     code =
                         """this.Elm = {
   Main: {
@@ -85,6 +106,10 @@ I was expecting to see something like `exposing (..)`
                 ( model, convertedSuccess { message = "Success! Compiled 1 module.", code = code } )
 
 
+
+-- SUBSCRIPTIONS
+
+
 subscriptions : Sub Msg
 subscriptions =
     convert Convert
@@ -94,103 +119,171 @@ subscriptions =
 -- PARSER
 
 
+type alias ElmParser a =
+    Parser Context Problem a
+
+
+type Context
+    = Definition String
+    | List
+    | Record
+
+
+type Problem
+    = ModuleName
+    | FreshLine Row Col
+
+
+type alias Row =
+    Int
+
+
+type alias Col =
+    Int
+
+
 type Module
-    = Module ModuleInfo
-
-
-type alias ModuleInfo =
-    { name : String
-    , exposing_ : List String
-    , topLevelDeclarations : List TopLevelDeclaration
-    }
-
-
-type alias TopLevelDeclaration =
-    String
-
-
-module_ : Parser Module
-module_ =
-    Parser.succeed Module
-        |= moduleInfo
-
-
-moduleInfo : Parser ModuleInfo
-moduleInfo =
-    Parser.succeed ModuleInfo
-        |. Parser.keyword "module"
-        |. Parser.spaces
-        |= moduleName
-        |. Parser.spaces
-        |. Parser.keyword "exposing"
-        |. Parser.spaces
-        |= Parser.sequence
-            { start = "("
-            , separator = ","
-            , end = ")"
-            , spaces = Parser.spaces
-            , item = typeVar
-            , trailing = Parser.Forbidden
-            }
-        |= topLevelDeclarations
-
-
-moduleName : Parser String
-moduleName =
-    Parser.getChompedString <|
-        Parser.succeed ()
-            |. Parser.chompIf Char.isUpper
-            |. Parser.chompWhile Char.isLower
-
-
-typeVar : Parser String
-typeVar =
-    Parser.variable
-        { start = Char.isLower
-        , inner = \c -> Char.isAlphaNum c || c == '_'
-        , reserved = Set.fromList [ "let", "in", "case", "of" ]
+    = Module
+        -- { _header :: Maybe Header
+        -- , _imports :: [Src.Import]
+        -- , _infixes :: [A.Located Src.Infix]
+        -- , _decls :: [Decl.Decl]
+        -- }
+        { header : Maybe Header
+        , imports : List ()
+        , infixes : List ()
+        , decls : List ()
         }
 
 
-topLevelDeclarations : Parser (List TopLevelDeclaration)
-topLevelDeclarations =
-    -- P.loop []
-    --     (manyHelp P.spaces
-    --         (P.succeed identity
-    --             |= topLevelDeclaration
-    --             |. P.spaces
-    --         )
-    --     )
-    -- manyHelp : Parser_ () -> Parser_ a -> List a -> Parser_ (P.Step (List a) (List a))
-    -- manyHelp spaces p vs =
-    --     P.oneOf
-    --         [ P.succeed (\v -> P.Loop (v :: vs))
-    --             |= p
-    --             |. spaces
-    --         , P.succeed ()
-    --             |> P.map (always (P.Done (List.reverse vs)))
-    --         ]
-    Parser.loop [] topLevelDeclaration
+type Header
+    = Header
+        -- Header (A.Located Name.Name) Effects (A.Located Src.Exposing) (Either A.Region Src.Comment)
+        { name : ( String, List String )
+        , effects : ()
+        }
 
 
-topLevelDeclaration : List TopLevelDeclaration -> Parser (Step (List TopLevelDeclaration) (List TopLevelDeclaration))
-topLevelDeclaration topLevelDeclarations_ =
+type alias Located a =
+    { start : ( Row, Col )
+    , value : a
+    , end : ( Row, Col )
+    }
+
+
+located : ElmParser a -> ElmParser (Located a)
+located parser =
+    Parser.succeed Located
+        |= Parser.getPosition
+        |= parser
+        |= Parser.getPosition
+
+
+chompModule : ElmParser Module
+chompModule =
+    Parser.succeed
+        (\header ->
+            Module
+                { header = header
+                , imports = []
+                , infixes = []
+                , decls = []
+                }
+        )
+        |= chompHeader
+
+
+chompHeader : ElmParser (Maybe Header)
+chompHeader =
+    Parser.succeed
+        (\start maybeName ->
+            Maybe.map
+                (\name ->
+                    Header
+                        { name = name
+                        , effects = ()
+                        }
+                )
+                maybeName
+        )
+        |. freshLine
+        |= Parser.getPosition
+        |= Parser.oneOf
+            [ Parser.map Just moduleNameNoEffects
+            , Parser.map Just moduleNamePorts
+            , Parser.succeed Nothing
+            ]
+
+
+moduleNameNoEffects : ElmParser ( String, List String )
+moduleNameNoEffects =
+    Parser.succeed identity
+        |. Parser.keyword moduleToken
+        |. Parser.spaces
+        |= moduleName
+
+
+moduleNamePorts : ElmParser ( String, List String )
+moduleNamePorts =
+    Parser.succeed identity
+        |. Parser.keyword moduleToken
+        |. Parser.spaces
+        |. Parser.keyword moduleToken
+        |. Parser.spaces
+        |= moduleName
+
+
+moduleName : ElmParser ( String, List String )
+moduleName =
+    moduleNameWithoutDots
+        |> Parser.andThen (\topModuleName -> Parser.loop ( topModuleName, [] ) moduleNameHelp)
+
+
+moduleNameHelp : ( String, List String ) -> ElmParser (Step ( String, List String ) ( String, List String ))
+moduleNameHelp ( topModuleName, revModuleNames ) =
     Parser.oneOf
-        [ Parser.succeed (\topLevelDeclaration_ -> Loop (topLevelDeclaration_ :: topLevelDeclarations_))
-            |. Parser.spaces
-            |= typeVar
-            |. Parser.spaces
-            |. Parser.symbol "="
-            |. Parser.spaces
-            |. expression
+        [ Parser.succeed (\name -> Loop ( topModuleName, name :: revModuleNames ))
+            |= moduleNameWithoutDots
+            |. Parser.symbol (Parser.Token "." ModuleName)
         , Parser.succeed ()
-            |> Parser.map (\_ -> Done (List.reverse topLevelDeclarations_))
+            |> Parser.map (\_ -> Done ( topModuleName, List.reverse revModuleNames ))
         ]
 
 
-expression : Parser ()
-expression =
+moduleNameWithoutDots : ElmParser String
+moduleNameWithoutDots =
+    Parser.variable
+        { start = Char.isUpper
+        , inner = Char.isAlphaNum
+        , reserved = Set.empty
+        , expecting = ModuleName
+        }
+
+
+moduleToken : Token Problem
+moduleToken =
+    Parser.Token "module" ModuleName
+
+
+freshLine : ElmParser ()
+freshLine =
     Parser.succeed ()
+        |. Parser.spaces
+        |. checkFreshLine
+
+
+checkFreshLine : ElmParser ()
+checkFreshLine =
+    Parser.succeed identity
+        |= Parser.getPosition
+        |> Parser.andThen
+            (\( row, col ) ->
+                if col == 1 then
+                    Parser.succeed ()
+
+                else
+                    Parser.problem (FreshLine row col)
+            )
 
 
 
