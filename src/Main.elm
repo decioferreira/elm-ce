@@ -2,7 +2,7 @@ port module Main exposing (allTests, main)
 
 import Expect
 import Parser.Advanced as Parser exposing ((|.), (|=), Parser, Step(..), Token)
-import Set
+import Set exposing (Set)
 import Test exposing (Test)
 
 
@@ -52,7 +52,7 @@ type Msg
 -- UPDATE
 
 
-update : Msg -> () -> ( Model, Cmd Msg )
+update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         Convert content ->
@@ -89,18 +89,47 @@ update msg model =
                     in
                     ( model, convertedSuccess { message = "Success! Compiled 1 module.", code = code } )
 
+                Err [ deadEnd ] ->
+                    case deadEnd.problem of
+                        ModuleName ->
+                            ( model
+                            , convertedFail
+                                """-- PARSE ERROR ---------- specs/assets/elm/Parser/ModuleHeader/lowercaseName.elm
+
+  Something went wrong while parsing a module declaration.
+
+  1| module lowercaseName exposing (foo)
+            ^
+  I was expecting to see something like `exposing (..)`
+  """
+                            )
+
+                        PortModuleExposing ExposingValue ->
+                            ( model
+                            , convertedFail
+                                ("PortModuleExposing ExposingValue (row:"
+                                    ++ String.fromInt deadEnd.row
+                                    ++ ", col:"
+                                    ++ String.fromInt deadEnd.col
+                                    ++ ")\n\n"
+                                    ++ content
+                                )
+                            )
+
+                        _ ->
+                            ( model
+                            , convertedFail
+                                ("SOME OTHER ERROR TYPE (row:"
+                                    ++ String.fromInt deadEnd.row
+                                    ++ ", col:"
+                                    ++ String.fromInt deadEnd.col
+                                    ++ ")\n\n"
+                                    ++ content
+                                )
+                            )
+
                 Err _ ->
-                    ( model
-                    , convertedFail
-                        """-- PARSE ERROR ---------------- specs/assets/elm/Parser/ModuleName/lowercase.elm
-
-Something went wrong while parsing a module declaration.
-
-1| module lowercase exposing (foo)
-          ^
-I was expecting to see something like `exposing (..)`
-"""
-                    )
+                    ( model, convertedFail "TODO: MULTIPLE ERRORS!" )
 
 
 
@@ -126,9 +155,27 @@ type Context
     | Record
 
 
+
+-- PROBLEM
+
+
 type Problem
-    = ModuleName
-    | FreshLine Row Col
+    = FreshLine Row Col
+    | ModuleExposing ExposingProblem
+    | ModuleName
+    | ModuleProblem
+    | PortModuleExposing ExposingProblem
+    | PortModuleProblem
+
+
+type ExposingProblem
+    = ExposingStart
+    | ExposingValue
+    | ExposingEnd
+
+
+
+-- POSITION
 
 
 type alias Row =
@@ -139,26 +186,28 @@ type alias Col =
     Int
 
 
-type Module
-    = Module
-        -- { _header :: Maybe Header
-        -- , _imports :: [Src.Import]
-        -- , _infixes :: [A.Located Src.Infix]
-        -- , _decls :: [Decl.Decl]
-        -- }
-        { header : Maybe Header
-        , imports : List ()
-        , infixes : List ()
-        , decls : List ()
-        }
+
+-- EXPOSING
 
 
-type Header
-    = Header
-        -- Header (A.Located Name.Name) Effects (A.Located Src.Exposing) (Either A.Region Src.Comment)
-        { name : ( String, List String )
-        , effects : ()
-        }
+type Exposing
+    = Open
+    | Explicit (List Exposed)
+
+
+type Exposed
+    = Lower String
+    | Upper String Privacy
+    | Operator String
+
+
+type Privacy
+    = Public
+    | Private
+
+
+
+-- LOCATED
 
 
 type alias Located a =
@@ -176,6 +225,24 @@ located parser =
         |= Parser.getPosition
 
 
+
+-- MODULE
+
+
+type Module
+    = Module
+        -- { _header :: Maybe Header
+        -- , _imports :: [Src.Import]
+        -- , _infixes :: [A.Located Src.Infix]
+        -- , _decls :: [Decl.Decl]
+        -- }
+        { header : Maybe Header
+        , imports : List ()
+        , infixes : List ()
+        , decls : List ()
+        }
+
+
 chompModule : ElmParser Module
 chompModule =
     Parser.succeed
@@ -190,21 +257,29 @@ chompModule =
         |= chompHeader
 
 
+
+-- HEADER
+
+
+type Header
+    = Header
+        -- Header (A.Located Name.Name) Effects (A.Located Src.Exposing) (Either A.Region Src.Comment)
+        { name : ( String, List String )
+        , effects : Effects
+        , exposing_ : Exposing
+        }
+
+
+type Effects
+    = NoEffects
+    | Ports
+    | Manager
+
+
 chompHeader : ElmParser (Maybe Header)
 chompHeader =
-    Parser.succeed
-        (\start maybeName ->
-            Maybe.map
-                (\name ->
-                    Header
-                        { name = name
-                        , effects = ()
-                        }
-                )
-                maybeName
-        )
+    Parser.succeed identity
         |. freshLine
-        |= Parser.getPosition
         |= Parser.oneOf
             [ Parser.map Just moduleNameNoEffects
             , Parser.map Just moduleNamePorts
@@ -212,22 +287,46 @@ chompHeader =
             ]
 
 
-moduleNameNoEffects : ElmParser ( String, List String )
+moduleNameNoEffects : ElmParser Header
 moduleNameNoEffects =
-    Parser.succeed identity
-        |. Parser.keyword moduleToken
+    Parser.succeed
+        (\start name exposingValue ->
+            Header
+                { name = name
+                , effects = NoEffects
+                , exposing_ = exposingValue
+                }
+        )
+        |= Parser.getPosition
+        |. Parser.keyword (moduleToken ModuleProblem)
         |. Parser.spaces
         |= moduleName
+        |. Parser.spaces
+        |. Parser.keyword (exposingToken ModuleProblem)
+        |. Parser.spaces
+        |= exposing_ ModuleExposing
 
 
-moduleNamePorts : ElmParser ( String, List String )
+moduleNamePorts : ElmParser Header
 moduleNamePorts =
-    Parser.succeed identity
-        |. Parser.keyword moduleToken
+    Parser.succeed
+        (\start name exposingValue ->
+            Header
+                { name = name
+                , effects = Ports
+                , exposing_ = exposingValue
+                }
+        )
+        |= Parser.getPosition
+        |. Parser.keyword portToken
         |. Parser.spaces
-        |. Parser.keyword moduleToken
+        |. Parser.keyword (moduleToken PortModuleProblem)
         |. Parser.spaces
         |= moduleName
+        |. Parser.spaces
+        |. Parser.keyword (exposingToken PortModuleProblem)
+        |. Parser.spaces
+        |= exposing_ PortModuleExposing
 
 
 moduleName : ElmParser ( String, List String )
@@ -257,9 +356,73 @@ moduleNameWithoutDots =
         }
 
 
-moduleToken : Token Problem
-moduleToken =
-    Parser.Token "module" ModuleName
+exposing_ : (ExposingProblem -> Problem) -> ElmParser Exposing
+exposing_ problemWrapper =
+    Parser.oneOf
+        [ Parser.succeed Open
+            |. Parser.symbol (Parser.Token "(" (problemWrapper ExposingStart))
+            |. Parser.spaces
+            |. Parser.token (Parser.Token ".." (problemWrapper ExposingValue))
+            |. Parser.spaces
+            |. Parser.symbol (Parser.Token ")" (problemWrapper ExposingEnd))
+        , Parser.succeed Explicit
+            |= Parser.sequence
+                { start = Parser.Token "(" (problemWrapper ExposingStart)
+                , separator = Parser.Token "," (problemWrapper ExposingEnd)
+                , end = Parser.Token ")" (problemWrapper ExposingEnd)
+                , spaces = Parser.spaces
+                , item = chompExposed problemWrapper
+                , trailing = Parser.Forbidden
+                }
+        ]
+
+
+chompExposed : (ExposingProblem -> Problem) -> ElmParser Exposed
+chompExposed problemWrapper =
+    Parser.oneOf
+        [ Parser.succeed Lower
+            |= Parser.variable
+                { start = Char.isLower
+                , inner = \c -> Char.isAlphaNum c || c == '_'
+                , reserved = reservedWords
+                , expecting = problemWrapper ExposingValue
+                }
+        ]
+
+
+reservedWords : Set String
+reservedWords =
+    Set.fromList
+        [ "if"
+        , "then"
+        , "else"
+        , "case"
+        , "of"
+        , "let"
+        , "in"
+        , "type"
+        , "module"
+        , "where"
+        , "import"
+        , "exposing"
+        , "as"
+        , "port"
+        ]
+
+
+portToken : Token Problem
+portToken =
+    Parser.Token "port" PortModuleProblem
+
+
+moduleToken : Problem -> Token Problem
+moduleToken problem =
+    Parser.Token "module" problem
+
+
+exposingToken : Problem -> Token Problem
+exposingToken problem =
+    Parser.Token "exposing" problem
 
 
 freshLine : ElmParser ()
@@ -289,7 +452,25 @@ checkFreshLine =
 
 allTests : Test
 allTests =
-    moduleNameTests
+    Test.describe "Main module"
+        [ chompHeaderTests
+        , moduleNameTests
+        , exposingTests
+        ]
+
+
+chompHeaderTests : Test
+chompHeaderTests =
+    Test.describe "chompHeader"
+        [ Test.test "module Main exposing (..)" <|
+            \_ ->
+                Expect.equal (Parser.run chompHeader "module Main exposing (..)")
+                    (Ok (Just (Header { name = ( "Main", [] ), effects = NoEffects, exposing_ = Open })))
+        , Test.test "port module Main exposing (..)" <|
+            \_ ->
+                Expect.equal (Parser.run chompHeader "port module Main exposing (..)")
+                    (Ok (Just (Header { name = ( "Main", [] ), effects = Ports, exposing_ = Open })))
+        ]
 
 
 moduleNameTests : Test
@@ -304,4 +485,16 @@ moduleNameTests =
         , Test.test "Nested.Module.Name" <|
             \_ ->
                 Expect.equal (Parser.run moduleName "Nested.Module.Name") (Ok ( "Nested", [ "Module", "Name" ] ))
+        ]
+
+
+exposingTests : Test
+exposingTests =
+    Test.describe "exposing_"
+        [ Test.test "(..)" <|
+            \_ ->
+                Expect.equal (Parser.run (exposing_ ModuleExposing) "(..)") (Ok Open)
+        , Test.test "(foo)" <|
+            \_ ->
+                Expect.equal (Parser.run (exposing_ ModuleExposing) "(foo)") (Ok (Explicit [ Lower "foo" ]))
         ]

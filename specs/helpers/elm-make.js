@@ -13,9 +13,15 @@ class ElmMake {
   }
 
   success(modules) {
-    this.expect("stderr", "")
+    let successMessage = new RegExp("Success!\n\n$");
+
+    if (modules) {
       // .expect("stdout", "\r[==================================================] - 1 / 1\r                                                                     \rSuccess! Compiled 1 module.\n\n")
-      .expect("stdout", new RegExp(`Success! Compiled ${modules} module.`))
+      successMessage = new RegExp(`Success! Compiled ${modules} module.\n\n$`);
+    }
+
+    this.expect("stderr", "")
+      .expect("stdout", successMessage)
       .expect("code", 0);
 
     return this;
@@ -37,7 +43,7 @@ class ElmMake {
   }
 
   end(callback) {
-    Promise.all([this.elmEvancz.end(), this.elmCE.end()]).then(values => {
+    Promise.all([this.elmEvancz.end()]).then(values => {
       // console.log(values);
       callback();
     });
