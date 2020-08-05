@@ -171,6 +171,9 @@ type Problem
 type ExposingProblem
     = ExposingStart
     | ExposingValue
+    | ExposingOperator
+    | ExposingOperatorRightParen
+    | ExposingTypePrivacy
     | ExposingEnd
 
 
@@ -359,12 +362,12 @@ moduleNameWithoutDots =
 exposing_ : (ExposingProblem -> Problem) -> ElmParser Exposing
 exposing_ problemWrapper =
     Parser.oneOf
-        [ Parser.succeed Open
-            |. Parser.symbol (Parser.Token "(" (problemWrapper ExposingStart))
-            |. Parser.spaces
-            |. Parser.token (Parser.Token ".." (problemWrapper ExposingValue))
-            |. Parser.spaces
-            |. Parser.symbol (Parser.Token ")" (problemWrapper ExposingEnd))
+        [ Parser.backtrackable
+            (Parser.succeed Open
+                |. Parser.symbol (Parser.Token "(" (problemWrapper ExposingStart))
+                |. Parser.symbol (Parser.Token ".." (problemWrapper ExposingValue))
+                |. Parser.symbol (Parser.Token ")" (problemWrapper ExposingEnd))
+            )
         , Parser.succeed Explicit
             |= Parser.sequence
                 { start = Parser.Token "(" (problemWrapper ExposingStart)
@@ -387,6 +390,59 @@ chompExposed problemWrapper =
                 , reserved = reservedWords
                 , expecting = problemWrapper ExposingValue
                 }
+        , Parser.succeed Operator
+            |. Parser.symbol (Parser.Token "(" (problemWrapper ExposingValue))
+            |= Parser.variable
+                { start = \c -> Set.member c operatorChars
+                , inner = \c -> Set.member c operatorChars
+                , reserved = reservedOperatorWords
+                , expecting = problemWrapper ExposingOperator
+                }
+            |. Parser.symbol (Parser.Token ")" (problemWrapper ExposingOperatorRightParen))
+        , Parser.succeed Upper
+            |= Parser.variable
+                { start = Char.isUpper
+                , inner = \c -> Char.isAlphaNum c || c == '_'
+                , reserved = Set.empty
+                , expecting = problemWrapper ExposingValue
+                }
+            |= Parser.oneOf
+                [ Parser.succeed Public
+                    |. Parser.symbol (Parser.Token "(..)" (problemWrapper ExposingTypePrivacy))
+                , Parser.succeed Private
+                ]
+        ]
+
+
+operatorChars : Set Char
+operatorChars =
+    Set.fromList
+        [ '+'
+        , '-'
+        , '/'
+        , '*'
+        , '='
+        , '.'
+        , '<'
+        , '>'
+        , ':'
+        , '&'
+        , '|'
+        , '^'
+        , '?'
+        , '%'
+        , '!'
+        ]
+
+
+reservedOperatorWords : Set String
+reservedOperatorWords =
+    Set.fromList
+        [ "."
+        , "|"
+        , "->"
+        , "="
+        , ":"
         ]
 
 
@@ -497,4 +553,13 @@ exposingTests =
         , Test.test "(foo)" <|
             \_ ->
                 Expect.equal (Parser.run (exposing_ ModuleExposing) "(foo)") (Ok (Explicit [ Lower "foo" ]))
+        , Test.test "(Foo)" <|
+            \_ ->
+                Expect.equal (Parser.run (exposing_ ModuleExposing) "(Foo)") (Ok (Explicit [ Upper "Foo" Private ]))
+        , Test.test "(Foo(..))" <|
+            \_ ->
+                Expect.equal (Parser.run (exposing_ ModuleExposing) "(Foo(..))") (Ok (Explicit [ Upper "Foo" Public ]))
+        , Test.test "((+))" <|
+            \_ ->
+                Expect.equal (Parser.run (exposing_ ModuleExposing) "((+))") (Ok (Explicit [ Operator "+" ]))
         ]
