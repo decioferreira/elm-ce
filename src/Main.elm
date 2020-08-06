@@ -16,7 +16,7 @@ port convert : (String -> msg) -> Sub msg
 port convertedSuccess : { message : String, code : String } -> Cmd msg
 
 
-port convertedFail : String -> Cmd msg
+port convertedFail : { message : String, error : String } -> Cmd msg
 
 
 
@@ -94,7 +94,8 @@ update msg model =
                         ModuleName ->
                             ( model
                             , convertedFail
-                                """-- PARSE ERROR ---------- specs/assets/elm/Parser/ModuleHeader/lowercaseName.elm
+                                { message = "Detected problems in 1 module.\n"
+                                , error = """-- PARSE ERROR ---------- specs/assets/elm/Parser/ModuleHeader/lowercaseName.elm
 
   Something went wrong while parsing a module declaration.
 
@@ -102,34 +103,39 @@ update msg model =
             ^
   I was expecting to see something like `exposing (..)`
   """
+                                }
                             )
 
                         PortModuleExposing ExposingValue ->
                             ( model
                             , convertedFail
-                                ("PortModuleExposing ExposingValue (row:"
-                                    ++ String.fromInt deadEnd.row
-                                    ++ ", col:"
-                                    ++ String.fromInt deadEnd.col
-                                    ++ ")\n\n"
-                                    ++ content
-                                )
+                                { message = "Detected problems in 1 module."
+                                , error =
+                                    "PortModuleExposing ExposingValue (row:"
+                                        ++ String.fromInt deadEnd.row
+                                        ++ ", col:"
+                                        ++ String.fromInt deadEnd.col
+                                        ++ ")\n\n"
+                                        ++ content
+                                }
                             )
 
                         _ ->
                             ( model
                             , convertedFail
-                                ("SOME OTHER ERROR TYPE (row:"
-                                    ++ String.fromInt deadEnd.row
-                                    ++ ", col:"
-                                    ++ String.fromInt deadEnd.col
-                                    ++ ")\n\n"
-                                    ++ content
-                                )
+                                { message = ""
+                                , error =
+                                    "SOME OTHER ERROR TYPE (row:"
+                                        ++ String.fromInt deadEnd.row
+                                        ++ ", col:"
+                                        ++ String.fromInt deadEnd.col
+                                        ++ ")\n\n"
+                                        ++ content
+                                }
                             )
 
                 Err _ ->
-                    ( model, convertedFail "TODO: MULTIPLE ERRORS!" )
+                    ( model, convertedFail { message = "", error = "TODO: MULTIPLE ERRORS!" } )
 
 
 

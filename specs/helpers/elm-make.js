@@ -16,7 +16,6 @@ class ElmMake {
     let successMessage = new RegExp("Success!\n\n$");
 
     if (modules) {
-      // .expect("stdout", "\r[==================================================] - 1 / 1\r                                                                     \rSuccess! Compiled 1 module.\n\n")
       successMessage = new RegExp(`Success! Compiled ${modules} module.\n\n$`);
     }
 
@@ -27,9 +26,9 @@ class ElmMake {
     return this;
   }
 
-  fail(message) {
+  fail(modules, message) {
     this.expect("stderr", message)
-      .expect("stdout", "")
+      .expect("stdout", new RegExp(`Detected problems in ${modules} module.\n\n$`))
       .expect("code", 1);
 
     return this;

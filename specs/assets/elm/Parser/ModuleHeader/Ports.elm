@@ -1,5 +1,7 @@
-port module Ports exposing (foo)
+port module Ports exposing (messageReceiver, sendMessage)
 
 
-foo =
-    ()
+port sendMessage : String -> Cmd msg
+
+
+port messageReceiver : (String -> msg) -> Sub msg
