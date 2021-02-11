@@ -47,3 +47,9 @@ yarn elm-test
 ## Contributors
 
 - [decioferreira](https://github.com/decioferreira) Decio Ferreira - creator, maintainer
+
+## References
+
+* https://github.com/elm/compiler/blob/master/compiler/src/AST/Source.hs
+* https://github.com/elm-in-elm/compiler/blob/master/src/Stage/Parse/Parser.elm
+* https://github.com/stil4m/elm-syntax/blob/master/src/Elm/Parser/Imports.elm
