@@ -22,7 +22,6 @@ const runBoth = params => {
   ceApp.ports[params.incomingPort].send(params.sendParam);
 };
 
-// NEW
 test("onePlusOne to equal 2", done => {
   runBoth({
     incomingPort: "incomingOnePlusOne",

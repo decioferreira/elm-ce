@@ -65,5 +65,5 @@ subscriptions : () -> Sub Msg
 subscriptions model =
     Sub.batch
         [ incomingAddOne AddOne
-        , incomingOnePlusOne (always OnePlusOne)
+        , incomingOnePlusOne (\_ -> OnePlusOne)
         ]
