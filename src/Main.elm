@@ -1,9 +1,15 @@
-port module Main exposing (main)
+port module Main exposing (allTests, main)
 
 import Elm.Parser
 import Elm.Processing
 import Elm.Syntax.Declaration as Declaration
-import Elm.Syntax.Node as Node
+import Elm.Syntax.Expression as Expression exposing (Expression)
+import Elm.Syntax.Infix as Infix
+import Elm.Syntax.Node as Node exposing (Node(..))
+import Elm.Syntax.Pattern as Pattern exposing (Pattern)
+import Elm.Syntax.Range as Range
+import Expect
+import Test exposing (Test)
 
 
 
@@ -77,17 +83,45 @@ update msg model =
                                             --     in
                                             --     ()
                                             Declaration.FunctionDeclaration function ->
-                                                Node.value (Node.value function.declaration).name
-                                                    :: acc
+                                                -- Some inspiration can be found at https://github.com/elm-in-elm/compiler/blob/master/src/Stage/Emit/JavaScript.elm#L51
+                                                let
+                                                    functionDeclaration =
+                                                        Node.value function.declaration
+
+                                                    _ =
+                                                        Debug.log (Node.value functionDeclaration.name) functionDeclaration
+
+                                                    functionArguments =
+                                                        functionDeclaration.arguments
+                                                            |> List.indexedMap argumentToString
+                                                            |> String.join ", "
+
+                                                    functionString =
+                                                        "function "
+                                                            ++ Node.value functionDeclaration.name
+                                                            ++ "("
+                                                            ++ functionArguments
+                                                            ++ ") { return "
+                                                            ++ expressionToString functionDeclaration.expression
+                                                            ++ "; }"
+                                                in
+                                                functionString :: acc
 
                                             _ ->
                                                 acc
                                     )
                                     []
                                 |> String.join "\n"
+                    in
+                    ( model, convertedSuccess { message = "Success! Compiled 1 module.", code = coreCode ++ "\n\n" ++ generatedCode } )
 
-                        code =
-                            """// Source: https://github.com/thunklife/fn-curry
+                Err error ->
+                    ( model, convertedFail { message = "", error = "TODO: MULTIPLE ERRORS!" } )
+
+
+coreCode : String
+coreCode =
+    """// Source: https://github.com/thunklife/fn-curry
 function curry(fn, fnLength) {
   fnLength = fnLength || fn.length;
 
@@ -127,11 +161,78 @@ this.Elm = {
     }
   }
 };"""
-                    in
-                    ( model, convertedSuccess { message = "Success! Compiled 1 module.", code = generatedCode ++ "\n\n" ++ code } )
 
-                Err error ->
-                    ( model, convertedFail { message = "", error = "TODO: MULTIPLE ERRORS!" } )
+
+argumentToString : Int -> Node Pattern -> String
+argumentToString index argument =
+    case Node.value argument of
+        Pattern.AllPattern ->
+            "_v" ++ String.fromInt index
+
+        Pattern.VarPattern name ->
+            name
+
+        Pattern.NamedPattern qualifiedNameRef _ ->
+            "/* TODO NamedPattern */"
+
+        _ ->
+            "/* TODO argumentToString */"
+
+
+expressionToString : Node Expression -> String
+expressionToString expression =
+    case Node.value expression of
+        Expression.UnitExpr ->
+            "0"
+
+        Expression.Application (functionExpression :: arguments) ->
+            expressionToString functionExpression ++ "(" ++ String.join ", " (List.map expressionToString arguments) ++ ")"
+
+        Expression.OperatorApplication operator _ leftExpression rightExpression ->
+            "(" ++ expressionToString leftExpression ++ " " ++ operator ++ " " ++ expressionToString rightExpression ++ ")"
+
+        Expression.FunctionOrValue moduleName functionOrValue ->
+            String.join "$" (moduleName ++ [ functionOrValue ])
+
+        Expression.Integer integer ->
+            String.fromInt integer
+
+        Expression.TupledExpression (a :: b :: []) ->
+            "{ a: " ++ expressionToString a ++ ", b: " ++ expressionToString b ++ " }"
+
+        Expression.TupledExpression (a :: b :: c :: []) ->
+            "{ a: " ++ expressionToString a ++ ", b: " ++ expressionToString b ++ ", c: " ++ expressionToString c ++ " }"
+
+        Expression.CaseExpression caseBlock ->
+            "(function() {"
+                ++ (caseBlock.cases
+                        |> List.indexedMap
+                            (\index ( argument, block ) ->
+                                "if(" ++ expressionToString caseBlock.expression ++ " === " ++ argumentToString index argument ++ ") { return " ++ expressionToString block ++ "; }"
+                            )
+                        |> String.join " else "
+                   )
+                ++ "})()"
+
+        Expression.LambdaExpression lambda ->
+            let
+                lambdaArgs =
+                    lambda.args
+                        |> List.indexedMap argumentToString
+                        |> String.join ", "
+            in
+            "function(" ++ lambdaArgs ++ ") { return " ++ expressionToString lambda.expression ++ "; }"
+
+        Expression.RecordExpr recordSetters ->
+            "{ "
+                ++ String.join ", "
+                    (recordSetters
+                        |> List.map (\(Node _ ( Node _ name, value )) -> name ++ ": " ++ expressionToString value)
+                    )
+                ++ " }"
+
+        _ ->
+            "/* TODO expressionToString */"
 
 
 
@@ -141,3 +242,25 @@ this.Elm = {
 subscriptions : Sub Msg
 subscriptions =
     convert Convert
+
+
+
+-- TESTS
+
+
+allTests : Test
+allTests =
+    Test.describe "Elm Community Edition"
+        [ argumentToStringTests
+        ]
+
+
+argumentToStringTests : Test
+argumentToStringTests =
+    Test.describe "argumentToString"
+        [ Test.test "Pattern.AllPattern" <|
+            \_ ->
+                Expect.equal
+                    (argumentToString 0 (Node Range.emptyRange Pattern.AllPattern))
+                    "_v0"
+        ]
