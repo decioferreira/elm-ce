@@ -31,10 +31,10 @@ port convertedFail : { message : String, error : String } -> Cmd msg
 -- MAIN
 
 
-main : Program () Model Msg
+main : Program String Model Msg
 main =
     Platform.worker
-        { init = \_ -> ( (), Cmd.none )
+        { init = \code -> ( code, Cmd.none )
         , update = update
         , subscriptions = always subscriptions
         }
@@ -45,7 +45,7 @@ main =
 
 
 type alias Model =
-    ()
+    String
 
 
 
@@ -86,18 +86,22 @@ update msg model =
                                                     functionArguments =
                                                         functionDeclaration.arguments
                                                             |> List.indexedMap argumentToString
-                                                            |> String.join ", "
+
+                                                    ( preWrap, postWrap ) =
+                                                        case functionArguments of
+                                                            [] ->
+                                                                ( "", "" )
+
+                                                            _ ->
+                                                                ( "function(" ++ String.join ", " functionArguments ++ ") { return ", "; }" )
 
                                                     functionCode =
-                                                        "const "
+                                                        "var $author$project$Main$"
                                                             ++ Node.value functionDeclaration.name
-                                                            ++ " = curry(function "
-                                                            ++ Node.value functionDeclaration.name
-                                                            ++ "("
-                                                            ++ functionArguments
-                                                            ++ ") { return "
+                                                            ++ " = "
+                                                            ++ preWrap
                                                             ++ expressionToString functionDeclaration.expression
-                                                            ++ "; })"
+                                                            ++ postWrap
                                                 in
                                                 functionCode :: acc
 
@@ -109,11 +113,9 @@ update msg model =
                                                                 constructor.arguments
                                                                     |> List.indexedMap (\index _ -> smallVar index)
                                                         in
-                                                        ("const "
+                                                        ("var $author$project$Main$"
                                                             ++ Node.value constructor.name
-                                                            ++ " = curry(function "
-                                                            ++ Node.value constructor.name
-                                                            ++ "("
+                                                            ++ " = function("
                                                             ++ String.join ", " constructorArguments
                                                             ++ ") { return { "
                                                             ++ (constructorArguments
@@ -121,7 +123,7 @@ update msg model =
                                                                     |> (::) ("$: \"" ++ Node.value constructor.name ++ "\"")
                                                                     |> String.join ", "
                                                                )
-                                                            ++ " }; })"
+                                                            ++ " }; }"
                                                         )
                                                             :: customTypeAcc
                                                     )
@@ -131,7 +133,7 @@ update msg model =
                                             Declaration.PortDeclaration signature ->
                                                 case Node.value signature.typeAnnotation of
                                                     TypeAnnotation.FunctionTypeAnnotation _ (Node _ (TypeAnnotation.Typed (Node _ ( [], "Sub" )) _)) ->
-                                                        ("const "
+                                                        ("var $author$project$Main$"
                                                             ++ Node.value signature.name
                                                             ++ " = _Platform_incomingPort(\""
                                                             ++ Node.value signature.name
@@ -141,7 +143,7 @@ update msg model =
                                                             :: acc
 
                                                     TypeAnnotation.FunctionTypeAnnotation _ (Node _ (TypeAnnotation.Typed (Node _ ( [], "Cmd" )) _)) ->
-                                                        ("const "
+                                                        ("var $author$project$Main$"
                                                             ++ Node.value signature.name
                                                             ++ " = _Platform_outgoingPort(\""
                                                             ++ Node.value signature.name
@@ -162,7 +164,7 @@ update msg model =
                     ( model
                     , convertedSuccess
                         { message = "Success! Compiled 1 module."
-                        , code = preCode ++ code ++ postCode
+                        , code = preCode ++ model ++ "\n" ++ code ++ postCode
                         }
                     )
 
@@ -172,80 +174,13 @@ update msg model =
 
 preCode : String
 preCode =
-    """(function (scope) {
-
-// this.Elm = {
-//   Main: {
-//     init: function() {
-//       return {
-//         ports: {
-//           incomingOnePlusOne: {
-//             send: function() {}
-//           },
-//           outgoingOnePlusOne: {
-//             subscribe: function(callback) {
-//               callback(2);
-//             }
-//           },
-//           incomingAddOne: {
-//             send: function() {}
-//           },
-//           outgoingAddOne: {
-//             subscribe: function(callback) {
-//               callback(3);
-//             }
-//           }
-//         }
-//       };
-//     }
-//   }
-// };
-
-// Curry function (source: https://github.com/thunklife/fn-curry)
-
-function curry(fn, fnLength) {
-  fnLength = fnLength || fn.length;
-
-  return function makeCurry() {
-    var args = Array.prototype.slice.call(arguments);
-    if(args.length === fnLength) return fn.apply(this, args);
-
-    return function() {
-      var newArgs = Array.prototype.slice.call(arguments);
-      return makeCurry.apply(this, args.concat(newArgs));
-    }
-  }
-};
-
-// CORE DECODERS
-
-function _Json_succeed(msg) { return { $: "succeed", a: msg }; }
-
-// PROGRAMS
-
-var Platform$worker = curry(function(impl, flagDecoder, debugMetadata, args) {
-});
-
-// OUTGOING PORTS
-
-function _Platform_outgoingPort(name, converter) {
-}
-
-// INCOMING PORTS
-
-function _Platform_incomingPort(name, converter) {
-}
-
-// MAIN
-
-"""
+    "(function(scope) {\n"
 
 
 postCode : String
 postCode =
     """
-scope.Elm = { Main: { init: main()(_Json_succeed(0), 0) } };
-
+_Platform_export({'Main':{'init':$author$project$Main$main($elm$json$Json$Decode$succeed(0))(0)}});
 }(this));
 """
 
@@ -260,7 +195,6 @@ argumentToString index argument =
             name
 
         Pattern.NamedPattern qualifiedNameRef arguments ->
-            -- TODO
             String.join "$" (qualifiedNameRef.moduleName ++ [ qualifiedNameRef.name ])
                 ++ "("
                 ++ String.join ", " (List.indexedMap argumentToString arguments)
@@ -283,10 +217,26 @@ expressionToString expression =
             expressionToString functionExpression ++ "(" ++ String.join ", " (List.map expressionToString arguments) ++ ")"
 
         Expression.OperatorApplication operator _ leftExpression rightExpression ->
-            "(" ++ expressionToString leftExpression ++ " " ++ operator ++ " " ++ expressionToString rightExpression ++ ")"
+            expressionToString leftExpression ++ " " ++ operator ++ " " ++ expressionToString rightExpression
 
         Expression.FunctionOrValue moduleName functionOrValue ->
-            String.join "$" (moduleName ++ [ functionOrValue ])
+            ((case moduleName of
+                [] ->
+                    [ "author", "project", "Main" ]
+
+                [ "Cmd" ] ->
+                    [ "elm", "core", "Platform", "Cmd" ]
+
+                [ "Sub" ] ->
+                    [ "elm", "core", "Platform", "Sub" ]
+
+                _ ->
+                    [ "elm", "core" ] ++ moduleName
+             )
+                ++ [ functionOrValue ]
+            )
+                |> List.map ((++) "$")
+                |> String.join ""
 
         Expression.Integer integer ->
             String.fromInt integer
