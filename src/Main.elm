@@ -1,6 +1,7 @@
 port module Main exposing (allTests, main)
 
 import Array exposing (Array)
+import Dict exposing (Dict)
 import Elm.Parser
 import Elm.Processing
 import Elm.Syntax.Declaration as Declaration
@@ -87,70 +88,100 @@ update msg model =
                                                         functionDeclaration.arguments
                                                             |> List.indexedMap argumentToString
 
-                                                    ( preWrap, postWrap ) =
-                                                        case functionArguments of
-                                                            [] ->
-                                                                ( "", "" )
+                                                    name =
+                                                        Node.value functionDeclaration.name
 
-                                                            _ ->
-                                                                ( "function(" ++ String.join ", " functionArguments ++ ") { return ", "; }" )
+                                                    ( expressionString, expressionDependencies ) =
+                                                        expressionToString functionArguments functionDeclaration.expression
 
                                                     functionCode =
                                                         "var $author$project$Main$"
-                                                            ++ Node.value functionDeclaration.name
+                                                            ++ name
                                                             ++ " = "
-                                                            ++ preWrap
-                                                            ++ expressionToString functionDeclaration.expression
-                                                            ++ postWrap
+                                                            ++ functionWrapper functionArguments (functionShouldReturn functionDeclaration.expression) expressionString
                                                 in
-                                                functionCode :: acc
+                                                Dict.insert name ( functionCode, expressionDependencies ) acc
 
                                             Declaration.CustomTypeDeclaration { constructors } ->
                                                 List.foldr
                                                     (\(Node _ constructor) customTypeAcc ->
                                                         let
+                                                            name =
+                                                                Node.value constructor.name
+
                                                             constructorArguments =
                                                                 constructor.arguments
                                                                     |> List.indexedMap (\index _ -> smallVar index)
                                                         in
-                                                        ("var $author$project$Main$"
-                                                            ++ Node.value constructor.name
-                                                            ++ " = function("
-                                                            ++ String.join ", " constructorArguments
-                                                            ++ ") { return { "
-                                                            ++ (constructorArguments
-                                                                    |> List.map (\arg -> arg ++ ": " ++ arg)
-                                                                    |> (::) ("$: \"" ++ Node.value constructor.name ++ "\"")
-                                                                    |> String.join ", "
-                                                               )
-                                                            ++ " }; }"
-                                                        )
-                                                            :: customTypeAcc
+                                                        Dict.insert name
+                                                            ( "var $author$project$Main$"
+                                                                ++ name
+                                                                ++ " = "
+                                                                ++ functionWrapper constructorArguments
+                                                                    True
+                                                                    ("{ "
+                                                                        ++ (constructorArguments
+                                                                                |> List.map (\arg -> arg ++ ": " ++ arg)
+                                                                                |> (::) ("$: \"" ++ name ++ "\"")
+                                                                                |> String.join ", "
+                                                                           )
+                                                                        ++ " }"
+                                                                    )
+                                                            , []
+                                                            )
+                                                            customTypeAcc
                                                     )
                                                     acc
                                                     constructors
 
                                             Declaration.PortDeclaration signature ->
+                                                let
+                                                    name =
+                                                        Node.value signature.name
+                                                in
                                                 case Node.value signature.typeAnnotation of
-                                                    TypeAnnotation.FunctionTypeAnnotation _ (Node _ (TypeAnnotation.Typed (Node _ ( [], "Sub" )) _)) ->
-                                                        ("var $author$project$Main$"
-                                                            ++ Node.value signature.name
-                                                            ++ " = _Platform_incomingPort(\""
-                                                            ++ Node.value signature.name
-                                                            -- TODO missing converter
-                                                            ++ "\")"
-                                                        )
-                                                            :: acc
+                                                    TypeAnnotation.FunctionTypeAnnotation (Node _ converter) (Node _ (TypeAnnotation.Typed (Node _ ( [], "Sub" )) _)) ->
+                                                        let
+                                                            arguments =
+                                                                case converter of
+                                                                    TypeAnnotation.FunctionTypeAnnotation (Node _ TypeAnnotation.Unit) _ ->
+                                                                        [ "$elm$json$Json$Decode$null(0)" ]
 
-                                                    TypeAnnotation.FunctionTypeAnnotation _ (Node _ (TypeAnnotation.Typed (Node _ ( [], "Cmd" )) _)) ->
-                                                        ("var $author$project$Main$"
-                                                            ++ Node.value signature.name
-                                                            ++ " = _Platform_outgoingPort(\""
-                                                            ++ Node.value signature.name
-                                                            -- TODO missing converter
-                                                            ++ "\")"
-                                                        )
-                                                            :: acc
+                                                                    TypeAnnotation.FunctionTypeAnnotation (Node _ (TypeAnnotation.Typed (Node _ ( [], "Int" )) _)) _ ->
+                                                                        [ "$elm$json$Json$Decode$int" ]
+
+                                                                    _ ->
+                                                                        [ "/* TODO PortDeclaration(Sub) converter (" ++ Debug.toString ( name, converter ) ++ ") */" ]
+                                                        in
+                                                        Dict.insert name
+                                                            ( "var $author$project$Main$"
+                                                                ++ name
+                                                                ++ " = _Platform_incomingPort("
+                                                                ++ String.join ", " (("\"" ++ name ++ "\"") :: arguments)
+                                                                ++ ")"
+                                                            , []
+                                                            )
+                                                            acc
+
+                                                    TypeAnnotation.FunctionTypeAnnotation (Node _ converter) (Node _ (TypeAnnotation.Typed (Node _ ( [], "Cmd" )) _)) ->
+                                                        let
+                                                            arguments =
+                                                                case converter of
+                                                                    TypeAnnotation.Typed (Node _ ( [], "Int" )) _ ->
+                                                                        [ "$elm$json$Json$Encode$int" ]
+
+                                                                    _ ->
+                                                                        [ "/* TODO PortDeclaration(Cmd) converter (" ++ Debug.toString ( name, converter ) ++ ") */" ]
+                                                        in
+                                                        Dict.insert name
+                                                            ( "var $author$project$Main$"
+                                                                ++ name
+                                                                ++ " = _Platform_outgoingPort("
+                                                                ++ String.join ", " (("\"" ++ name ++ "\"") :: arguments)
+                                                                ++ ")"
+                                                            , []
+                                                            )
+                                                            acc
 
                                                     _ ->
                                                         acc
@@ -158,18 +189,78 @@ update msg model =
                                             _ ->
                                                 acc
                                     )
-                                    []
-                                |> String.join "\n"
+                                    Dict.empty
+                                |> buildCode
+                                |> String.join ";\n"
                     in
                     ( model
                     , convertedSuccess
                         { message = "Success! Compiled 1 module."
-                        , code = preCode ++ model ++ "\n" ++ code ++ postCode
+                        , code = preCode ++ model ++ "\n" ++ code ++ "\n" ++ postCode
                         }
                     )
 
                 Err error ->
                     ( model, convertedFail { message = "", error = "TODO: MULTIPLE ERRORS!" } )
+
+
+buildCode : Dict String ( String, List String ) -> List String
+buildCode declarations =
+    declarations
+        |> Dict.foldl (buildCodeHelp declarations) { added = [], result = [] }
+        |> .result
+
+
+buildCodeHelp : Dict String ( String, List String ) -> String -> ( String, List String ) -> { added : List String, result : List String } -> { added : List String, result : List String }
+buildCodeHelp declarations declarationName ( declarationCode, dependencies ) acc =
+    if List.member declarationName acc.added then
+        acc
+
+    else
+        case dependencies of
+            headDependency :: tailDependencies ->
+                case Dict.get headDependency declarations of
+                    Just dependencyDeclaration ->
+                        acc
+                            |> buildCodeHelp declarations headDependency dependencyDeclaration
+                            |> buildCodeHelp declarations declarationName ( declarationCode, tailDependencies )
+
+                    Nothing ->
+                        buildCodeHelp declarations declarationName ( declarationCode, tailDependencies ) acc
+
+            [] ->
+                { added = declarationName :: acc.added, result = acc.result ++ [ declarationCode ] }
+
+
+functionWrapper : List String -> Bool -> String -> String
+functionWrapper arguments return code =
+    let
+        returnCode =
+            if return then
+                "return " ++ code ++ ";"
+
+            else
+                code
+    in
+    case arguments of
+        [] ->
+            code
+
+        singleArgument :: [] ->
+            "function(" ++ singleArgument ++ ") { " ++ returnCode ++ " }"
+
+        _ ->
+            "F" ++ String.fromInt (List.length arguments) ++ "(function(" ++ String.join ", " arguments ++ ") { " ++ returnCode ++ " })"
+
+
+functionShouldReturn : Node Expression -> Bool
+functionShouldReturn expression =
+    case Node.value expression of
+        Expression.CaseExpression _ ->
+            False
+
+        _ ->
+            True
 
 
 preCode : String
@@ -204,82 +295,189 @@ argumentToString index argument =
             "/* TODO argumentToString (" ++ Debug.toString debugArgument ++ ") */"
 
 
-expressionToString : Node Expression -> String
-expressionToString expression =
+expressionToString : List String -> Node Expression -> ( String, List String )
+expressionToString scopeVariables expression =
     case Node.value expression of
         Expression.UnitExpr ->
-            "0"
+            ( "0"
+            , []
+            )
 
         Expression.ListExpr listExpr ->
-            "[" ++ String.join ", " (List.map expressionToString listExpr) ++ "]"
+            let
+                ( listElements, dependencies ) =
+                    List.map (expressionToString scopeVariables) listExpr
+                        |> List.unzip
+                        |> Tuple.mapSecond List.concat
+            in
+            ( "_List_fromArray([" ++ String.join ", " listElements ++ "])"
+            , dependencies
+            )
 
         Expression.Application (functionExpression :: arguments) ->
-            expressionToString functionExpression ++ "(" ++ String.join ", " (List.map expressionToString arguments) ++ ")"
+            let
+                ( functionName, functionDependencies ) =
+                    expressionToString scopeVariables functionExpression
+
+                ( argumentExpressions, argumentDependencies ) =
+                    List.map (expressionToString scopeVariables) arguments
+                        |> List.unzip
+                        |> Tuple.mapSecond List.concat
+            in
+            ( functionName ++ "(" ++ String.join ", " argumentExpressions ++ ")"
+            , functionDependencies ++ argumentDependencies
+            )
 
         Expression.OperatorApplication operator _ leftExpression rightExpression ->
-            expressionToString leftExpression ++ " " ++ operator ++ " " ++ expressionToString rightExpression
+            let
+                ( leftString, leftDependencies ) =
+                    expressionToString scopeVariables leftExpression
+
+                ( rightString, rightDependencies ) =
+                    expressionToString scopeVariables rightExpression
+            in
+            ( leftString ++ " " ++ operator ++ " " ++ rightString
+            , leftDependencies ++ rightDependencies
+            )
 
         Expression.FunctionOrValue moduleName functionOrValue ->
-            ((case moduleName of
-                [] ->
-                    [ "author", "project", "Main" ]
+            let
+                ( path, dependencies ) =
+                    case ( moduleName, List.member functionOrValue scopeVariables ) of
+                        ( [], True ) ->
+                            ( [], [] )
 
-                [ "Cmd" ] ->
-                    [ "elm", "core", "Platform", "Cmd" ]
+                        ( [], False ) ->
+                            ( [ "", "author", "project", "Main" ], [ functionOrValue ] )
 
-                [ "Sub" ] ->
-                    [ "elm", "core", "Platform", "Sub" ]
+                        ( [ "Cmd" ], _ ) ->
+                            ( [ "", "elm", "core", "Platform", "Cmd" ], [] )
 
-                _ ->
-                    [ "elm", "core" ] ++ moduleName
-             )
+                        ( [ "Sub" ], _ ) ->
+                            ( [ "", "elm", "core", "Platform", "Sub" ], [] )
+
+                        _ ->
+                            ( [ "", "elm", "core" ] ++ moduleName, [] )
+            in
+            ( path
                 ++ [ functionOrValue ]
+                |> String.join "$"
+            , dependencies
             )
-                |> List.map ((++) "$")
-                |> String.join ""
 
         Expression.Integer integer ->
-            String.fromInt integer
+            ( String.fromInt integer
+            , []
+            )
 
-        Expression.TupledExpression (a :: b :: []) ->
-            "{ a: " ++ expressionToString a ++ ", b: " ++ expressionToString b ++ " }"
-
-        Expression.TupledExpression (a :: b :: c :: []) ->
-            "{ a: " ++ expressionToString a ++ ", b: " ++ expressionToString b ++ ", c: " ++ expressionToString c ++ " }"
+        Expression.TupledExpression variables ->
+            variables
+                |> List.indexedMap
+                    (\index variable ->
+                        expressionToString scopeVariables variable
+                            |> Tuple.mapFirst ((++) (smallVar index ++ ": "))
+                    )
+                |> List.unzip
+                |> Tuple.mapBoth (\varStrings -> "{ " ++ String.join ", " varStrings ++ " }") List.concat
 
         Expression.ParenthesizedExpression parenthesizedExpression ->
-            expressionToString parenthesizedExpression
+            expressionToString scopeVariables parenthesizedExpression
 
         Expression.CaseExpression caseBlock ->
-            "(function() {"
-                ++ (caseBlock.cases
+            let
+                ( caseBlockExpression, caseBlockDependencies ) =
+                    expressionToString scopeVariables caseBlock.expression
+
+                ( cases, caseDependencies ) =
+                    caseBlock.cases
                         |> List.indexedMap
                             (\index ( argument, block ) ->
-                                "if(" ++ expressionToString caseBlock.expression ++ " === " ++ argumentToString index argument ++ ") { return " ++ expressionToString block ++ "; }"
+                                let
+                                    ( argumentIdentifier, argumentAssignments, argumentScopeVariables ) =
+                                        case Node.value argument of
+                                            Pattern.NamedPattern qualifiedNameRef arguments ->
+                                                let
+                                                    ( namedPatternAssignments, namedPatternScopeVariables ) =
+                                                        arguments
+                                                            |> List.indexedMap
+                                                                (\namedPatternIndex (Node _ namedPatternArgument) ->
+                                                                    case namedPatternArgument of
+                                                                        Pattern.VarPattern name ->
+                                                                            ( "var "
+                                                                                ++ name
+                                                                                ++ " = "
+                                                                                ++ caseBlockExpression
+                                                                                ++ "."
+                                                                                ++ smallVar namedPatternIndex
+                                                                                ++ ";"
+                                                                            , [ name ]
+                                                                            )
+
+                                                                        debugNamedPatternArgument ->
+                                                                            ( "/* TODO CaseExpression.NamedPattern (" ++ Debug.toString debugNamedPatternArgument ++ ") */", [] )
+                                                                )
+                                                            |> List.unzip
+                                                            |> Tuple.mapSecond List.concat
+                                                in
+                                                ( "\"" ++ String.join "$" (qualifiedNameRef.moduleName ++ [ qualifiedNameRef.name ]) ++ "\""
+                                                , String.join " " namedPatternAssignments
+                                                , namedPatternScopeVariables
+                                                )
+
+                                            debugArgument ->
+                                                ( "/* TODO CaseExpression (" ++ Debug.toString debugArgument ++ ") */", "", [] )
+
+                                    ( blockString, blockDependencies ) =
+                                        expressionToString (scopeVariables ++ argumentScopeVariables) block
+                                in
+                                ( "if(" ++ caseBlockExpression ++ ".$ === " ++ argumentIdentifier ++ ") { " ++ argumentAssignments ++ " return " ++ blockString ++ "; }"
+                                , blockDependencies
+                                )
                             )
-                        |> String.join " else "
-                   )
-                ++ "})()"
+                        |> List.unzip
+                        |> Tuple.mapSecond List.concat
+            in
+            ( String.join " else " cases
+            , caseBlockDependencies ++ caseDependencies
+            )
 
         Expression.LambdaExpression lambda ->
             let
                 lambdaArgs =
-                    lambda.args
-                        |> List.indexedMap argumentToString
-                        |> String.join ", "
+                    List.indexedMap argumentToString lambda.args
+
+                ( lambdaExpression, lambdaDependencies ) =
+                    expressionToString lambdaArgs lambda.expression
             in
-            "function(" ++ lambdaArgs ++ ") { return " ++ expressionToString lambda.expression ++ "; }"
+            ( "function(" ++ String.join ", " lambdaArgs ++ ") { return " ++ lambdaExpression ++ "; }"
+            , lambdaDependencies
+            )
 
         Expression.RecordExpr recordSetters ->
-            "{ "
-                ++ String.join ", "
-                    (recordSetters
-                        |> List.map (\(Node _ ( Node _ name, value )) -> name ++ ": " ++ expressionToString value)
-                    )
-                ++ " }"
+            let
+                ( recordSettersList, recordSettersDependencies ) =
+                    recordSetters
+                        |> List.map
+                            (\(Node _ ( Node _ name, value )) ->
+                                let
+                                    ( valueString, valueDependencies ) =
+                                        expressionToString scopeVariables value
+                                in
+                                ( name ++ ": " ++ valueString
+                                , valueDependencies
+                                )
+                            )
+                        |> List.unzip
+                        |> Tuple.mapSecond List.concat
+            in
+            ( "{ " ++ String.join ", " recordSettersList ++ " }"
+            , recordSettersDependencies
+            )
 
         debugExpression ->
-            "/* TODO expressionToString (" ++ Debug.toString debugExpression ++ ") */"
+            ( "/* TODO expressionToString (" ++ Debug.toString debugExpression ++ ") */"
+            , []
+            )
 
 
 

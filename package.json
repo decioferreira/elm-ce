@@ -18,5 +18,8 @@
   },
   "dependencies": {
     "commander": "^7.1.0"
+  },
+  "jest": {
+    "testTimeout": 1500
   }
 }
