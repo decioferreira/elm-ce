@@ -5,13 +5,18 @@ import Dict exposing (Dict)
 import Elm.Parser
 import Elm.Processing
 import Elm.Syntax.Declaration as Declaration
+import Elm.Syntax.Exposing as Exposing
 import Elm.Syntax.Expression as Expression exposing (Expression)
+import Elm.Syntax.File as ElmSyntax
 import Elm.Syntax.Infix as Infix
+import Elm.Syntax.Module as Module
 import Elm.Syntax.Node as Node exposing (Node(..))
 import Elm.Syntax.Pattern as Pattern exposing (Pattern)
 import Elm.Syntax.Range as Range
 import Elm.Syntax.TypeAnnotation as TypeAnnotation
 import Expect
+import Json.Decode as Decode
+import Parser
 import Test exposing (Test)
 
 
@@ -19,26 +24,164 @@ import Test exposing (Test)
 -- PORTS
 
 
-port convert : (String -> msg) -> Sub msg
+port convert : (() -> msg) -> Sub msg
 
 
 port convertedSuccess : { message : String, code : String } -> Cmd msg
-
-
-port convertedFail : { message : String, error : String } -> Cmd msg
 
 
 
 -- MAIN
 
 
-main : Program String Model Msg
+main : Program Flags Model Msg
 main =
     Platform.worker
-        { init = \code -> ( code, Cmd.none )
+        { init =
+            \flags ->
+                ( Decode.decodeValue decodeFlags flags
+                    |> Result.withDefault
+                        { elmCore = ""
+                        , exposingModuleName = Dict.empty
+                        , sourceFiles = []
+                        }
+                , Cmd.none
+                )
         , update = update
         , subscriptions = always subscriptions
         }
+
+
+
+-- FLAGS
+
+
+type alias Flags =
+    Decode.Value
+
+
+decodeFlags : Decode.Decoder Model
+decodeFlags =
+    Decode.map2
+        (\elmCore dependenciesSourceFiles ->
+            let
+                ( dependencies, sourceFiles ) =
+                    List.unzip dependenciesSourceFiles
+            in
+            { elmCore = elmCore
+            , exposingModuleName =
+                dependencies
+                    |> List.concatMap
+                        (\dependency ->
+                            dependency.exposingList
+                                |> List.map (\exposingItem -> ( exposingItem, dependency.moduleName ))
+                        )
+                    |> Dict.fromList
+            , sourceFiles = sourceFiles
+            }
+        )
+        (Decode.field "elmCore" Decode.string)
+        (Decode.field "sourceFiles" decodeSourceFiles)
+
+
+decodeSourceFiles : Decode.Decoder (List ( Dependency, ElmFile ))
+decodeSourceFiles =
+    Decode.list
+        (Decode.andThen
+            (\sourceFile ->
+                case sourceFileParser sourceFile of
+                    Ok result ->
+                        Decode.succeed result
+
+                    Err error ->
+                        Decode.fail (Parser.deadEndsToString error)
+            )
+            decodeSourceFile
+        )
+
+
+
+-- SOURCE FILES
+
+
+type alias SourceFile =
+    { namespace : List String
+    , path : String
+    , source : String
+    }
+
+
+decodeSourceFile : Decode.Decoder SourceFile
+decodeSourceFile =
+    Decode.map3 SourceFile
+        (Decode.field "namespace" (Decode.list Decode.string))
+        (Decode.field "path" Decode.string)
+        (Decode.field "source" Decode.string)
+
+
+sourceFileParser : SourceFile -> Result (List Parser.DeadEnd) ( Dependency, ElmFile )
+sourceFileParser sourceFile =
+    let
+        fileResult =
+            Elm.Parser.parse sourceFile.source
+                |> Result.map (Elm.Processing.process Elm.Processing.init)
+    in
+    case fileResult of
+        Ok file ->
+            let
+                ( moduleName, exposingList ) =
+                    case Node.value file.moduleDefinition of
+                        Module.NormalModule moduleData ->
+                            ( Node.value moduleData.moduleName
+                            , Node.value moduleData.exposingList
+                            )
+
+                        Module.PortModule moduleData ->
+                            ( Node.value moduleData.moduleName
+                            , Node.value moduleData.exposingList
+                            )
+
+                        Module.EffectModule moduleData ->
+                            ( Node.value moduleData.moduleName
+                            , Node.value moduleData.exposingList
+                            )
+            in
+            Ok
+                ( { moduleName = sourceFile.namespace ++ moduleName
+                  , exposingList =
+                        case exposingList of
+                            Exposing.All _ ->
+                                Debug.todo "Exposing.All"
+
+                            Exposing.Explicit declarations ->
+                                List.filterMap
+                                    (\declaration ->
+                                        case Node.value declaration of
+                                            Exposing.FunctionExpose functionExpose ->
+                                                Just functionExpose
+
+                                            _ ->
+                                                Debug.todo "Exposing.Explicit"
+                                    )
+                                    declarations
+                  }
+                , { namespace = sourceFile.namespace ++ moduleName
+                  , file = file
+                  }
+                )
+
+        Err error ->
+            Err error
+
+
+
+-- DEPENDENCY
+
+
+type alias Dependency =
+    { moduleName : ModuleName
+    , exposingList : List String
+    }
 
 
 
@@ -46,7 +189,25 @@ main =
 
 
 type alias Model =
-    String
+    { elmCore : String
+    , exposingModuleName : Dict String ModuleName
+    , sourceFiles : List ElmFile
+    }
+
+
+type alias ModuleName =
+    List String
+
+
+type alias ElmFile =
+    { namespace : List String
+    , file : ElmSyntax.File
+    }
+
+
+functionFullName : ModuleName -> String -> String
+functionFullName moduleName name =
+    String.join "$" ("" :: moduleName ++ [ name ])
 
 
 
@@ -54,7 +215,7 @@ type alias Model =
 
 
 type Msg
-    = Convert String
+    = Convert
 
 
 
@@ -64,144 +225,146 @@ type Msg
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
-        Convert source ->
+        Convert ->
             let
-                result =
-                    source
-                        |> Elm.Parser.parse
-                        |> Result.map (Elm.Processing.process Elm.Processing.init)
+                code =
+                    model.sourceFiles
+                        |> List.map (elmFileToCode model)
+                        |> String.join ";\n"
             in
-            case result of
-                Ok file ->
-                    let
-                        code =
-                            file.declarations
-                                |> List.foldr
-                                    (\declaration acc ->
-                                        case Node.value declaration of
-                                            Declaration.FunctionDeclaration function ->
-                                                let
-                                                    functionDeclaration =
-                                                        Node.value function.declaration
+            ( model
+            , convertedSuccess
+                { message = "Success!"
+                , code = preCode ++ model.elmCore ++ "\n" ++ code ++ "\n" ++ postCode
+                }
+            )
 
-                                                    functionArguments =
-                                                        functionDeclaration.arguments
-                                                            |> List.indexedMap argumentToString
 
-                                                    name =
-                                                        Node.value functionDeclaration.name
+elmFileToCode : Model -> ElmFile -> String
+elmFileToCode model elmFile =
+    elmFile.file.declarations
+        |> List.foldr
+            (\declaration acc ->
+                case Node.value declaration of
+                    Declaration.FunctionDeclaration function ->
+                        let
+                            functionDeclaration =
+                                Node.value function.declaration
 
-                                                    ( expressionString, expressionDependencies ) =
-                                                        expressionToString functionArguments functionDeclaration.expression
+                            functionArguments =
+                                functionDeclaration.arguments
+                                    |> List.indexedMap argumentToString
 
-                                                    functionCode =
-                                                        "var $author$project$Main$"
-                                                            ++ name
-                                                            ++ " = "
-                                                            ++ functionWrapper functionArguments (functionShouldReturn functionDeclaration.expression) expressionString
-                                                in
-                                                Dict.insert name ( functionCode, expressionDependencies ) acc
+                            name =
+                                Node.value functionDeclaration.name
 
-                                            Declaration.CustomTypeDeclaration { constructors } ->
-                                                List.foldr
-                                                    (\(Node _ constructor) customTypeAcc ->
-                                                        let
-                                                            name =
-                                                                Node.value constructor.name
+                            ( expressionString, expressionDependencies ) =
+                                expressionToString model elmFile functionArguments functionDeclaration.expression
 
-                                                            constructorArguments =
-                                                                constructor.arguments
-                                                                    |> List.indexedMap (\index _ -> smallVar index)
-                                                        in
-                                                        Dict.insert name
-                                                            ( "var $author$project$Main$"
-                                                                ++ name
-                                                                ++ " = "
-                                                                ++ functionWrapper constructorArguments
-                                                                    True
-                                                                    ("{ "
-                                                                        ++ (constructorArguments
-                                                                                |> List.map (\arg -> arg ++ ": " ++ arg)
-                                                                                |> (::) ("$: \"" ++ name ++ "\"")
-                                                                                |> String.join ", "
-                                                                           )
-                                                                        ++ " }"
-                                                                    )
-                                                            , []
-                                                            )
-                                                            customTypeAcc
-                                                    )
-                                                    acc
-                                                    constructors
+                            functionCode =
+                                "var "
+                                    ++ functionFullName elmFile.namespace name
+                                    ++ " = "
+                                    ++ functionWrapper functionArguments (functionShouldReturn functionDeclaration.expression) expressionString
+                        in
+                        Dict.insert name ( functionCode, expressionDependencies ) acc
 
-                                            Declaration.PortDeclaration signature ->
-                                                let
-                                                    name =
-                                                        Node.value signature.name
-                                                in
-                                                case Node.value signature.typeAnnotation of
-                                                    TypeAnnotation.FunctionTypeAnnotation (Node _ converter) (Node _ (TypeAnnotation.Typed (Node _ ( [], "Sub" )) _)) ->
-                                                        let
-                                                            arguments =
-                                                                case converter of
-                                                                    TypeAnnotation.FunctionTypeAnnotation (Node _ TypeAnnotation.Unit) _ ->
-                                                                        [ "$elm$json$Json$Decode$null(0)" ]
+                    Declaration.CustomTypeDeclaration { constructors } ->
+                        List.foldr
+                            (\(Node _ constructor) customTypeAcc ->
+                                let
+                                    name =
+                                        Node.value constructor.name
 
-                                                                    TypeAnnotation.FunctionTypeAnnotation (Node _ (TypeAnnotation.Typed (Node _ ( [], "Int" )) _)) _ ->
-                                                                        [ "$elm$json$Json$Decode$int" ]
+                                    constructorArguments =
+                                        constructor.arguments
+                                            |> List.indexedMap (\index _ -> smallVar index)
+                                in
+                                Dict.insert name
+                                    ( "var "
+                                        ++ functionFullName elmFile.namespace name
+                                        ++ " = "
+                                        ++ functionWrapper constructorArguments
+                                            True
+                                            ("{ "
+                                                ++ (constructorArguments
+                                                        |> List.map (\arg -> arg ++ ": " ++ arg)
+                                                        |> (::) ("$: \"" ++ name ++ "\"")
+                                                        |> String.join ", "
+                                                   )
+                                                ++ " }"
+                                            )
+                                    , []
+                                    )
+                                    customTypeAcc
+                            )
+                            acc
+                            constructors
 
-                                                                    _ ->
-                                                                        [ "/* TODO PortDeclaration(Sub) converter (" ++ Debug.toString ( name, converter ) ++ ") */" ]
-                                                        in
-                                                        Dict.insert name
-                                                            ( "var $author$project$Main$"
-                                                                ++ name
-                                                                ++ " = _Platform_incomingPort("
-                                                                ++ String.join ", " (("\"" ++ name ++ "\"") :: arguments)
-                                                                ++ ")"
-                                                            , []
-                                                            )
-                                                            acc
+                    Declaration.PortDeclaration signature ->
+                        let
+                            name =
+                                Node.value signature.name
+                        in
+                        case Node.value signature.typeAnnotation of
+                            TypeAnnotation.FunctionTypeAnnotation (Node _ converter) (Node _ (TypeAnnotation.Typed (Node _ ( [], "Sub" )) _)) ->
+                                let
+                                    arguments =
+                                        case converter of
+                                            TypeAnnotation.FunctionTypeAnnotation (Node _ TypeAnnotation.Unit) _ ->
+                                                [ "$elm$json$Json$Decode$null(0)" ]
 
-                                                    TypeAnnotation.FunctionTypeAnnotation (Node _ converter) (Node _ (TypeAnnotation.Typed (Node _ ( [], "Cmd" )) _)) ->
-                                                        let
-                                                            arguments =
-                                                                case converter of
-                                                                    TypeAnnotation.Typed (Node _ ( [], "Int" )) _ ->
-                                                                        [ "$elm$json$Json$Encode$int" ]
+                                            TypeAnnotation.FunctionTypeAnnotation (Node _ (TypeAnnotation.Typed (Node _ ( [], "Int" )) _)) _ ->
+                                                [ "$elm$json$Json$Decode$int" ]
 
-                                                                    _ ->
-                                                                        [ "/* TODO PortDeclaration(Cmd) converter (" ++ Debug.toString ( name, converter ) ++ ") */" ]
-                                                        in
-                                                        Dict.insert name
-                                                            ( "var $author$project$Main$"
-                                                                ++ name
-                                                                ++ " = _Platform_outgoingPort("
-                                                                ++ String.join ", " (("\"" ++ name ++ "\"") :: arguments)
-                                                                ++ ")"
-                                                            , []
-                                                            )
-                                                            acc
-
-                                                    _ ->
-                                                        acc
+                                            TypeAnnotation.FunctionTypeAnnotation (Node _ (TypeAnnotation.Typed (Node _ ( [], "String" )) _)) _ ->
+                                                [ "$elm$json$Json$Decode$string" ]
 
                                             _ ->
-                                                acc
+                                                [ "/* TODO PortDeclaration(Sub) converter (" ++ Debug.toString ( name, converter ) ++ ") */" ]
+                                in
+                                Dict.insert name
+                                    ( "var "
+                                        ++ functionFullName elmFile.namespace name
+                                        ++ " = _Platform_incomingPort("
+                                        ++ String.join ", " (("\"" ++ name ++ "\"") :: arguments)
+                                        ++ ")"
+                                    , []
                                     )
-                                    Dict.empty
-                                |> buildCode
-                                |> String.join ";\n"
-                    in
-                    ( model
-                    , convertedSuccess
-                        { message = "Success! Compiled 1 module."
-                        , code = preCode ++ model ++ "\n" ++ code ++ "\n" ++ postCode
-                        }
-                    )
+                                    acc
 
-                Err error ->
-                    ( model, convertedFail { message = "", error = "TODO: MULTIPLE ERRORS!" } )
+                            TypeAnnotation.FunctionTypeAnnotation (Node _ converter) (Node _ (TypeAnnotation.Typed (Node _ ( [], "Cmd" )) _)) ->
+                                let
+                                    arguments =
+                                        case converter of
+                                            TypeAnnotation.Typed (Node _ ( [], "Int" )) _ ->
+                                                [ "$elm$json$Json$Encode$int" ]
+
+                                            TypeAnnotation.Typed (Node _ ( [], "String" )) _ ->
+                                                [ "$elm$json$Json$Encode$string" ]
+
+                                            _ ->
+                                                [ "/* TODO PortDeclaration(Cmd) converter (" ++ Debug.toString ( name, converter ) ++ ") */" ]
+                                in
+                                Dict.insert name
+                                    ( "var "
+                                        ++ functionFullName elmFile.namespace name
+                                        ++ " = _Platform_outgoingPort("
+                                        ++ String.join ", " (("\"" ++ name ++ "\"") :: arguments)
+                                        ++ ")"
+                                    , []
+                                    )
+                                    acc
+
+                            _ ->
+                                acc
+
+                    _ ->
+                        acc
+            )
+            Dict.empty
+        |> buildCode
+        |> String.join ";\n"
 
 
 buildCode : Dict String ( String, List String ) -> List String
@@ -295,8 +458,8 @@ argumentToString index argument =
             "/* TODO argumentToString (" ++ Debug.toString debugArgument ++ ") */"
 
 
-expressionToString : List String -> Node Expression -> ( String, List String )
-expressionToString scopeVariables expression =
+expressionToString : Model -> ElmFile -> List String -> Node Expression -> ( String, List String )
+expressionToString model elmFile scopeVariables expression =
     case Node.value expression of
         Expression.UnitExpr ->
             ( "0"
@@ -306,7 +469,7 @@ expressionToString scopeVariables expression =
         Expression.ListExpr listExpr ->
             let
                 ( listElements, dependencies ) =
-                    List.map (expressionToString scopeVariables) listExpr
+                    List.map (expressionToString model elmFile scopeVariables) listExpr
                         |> List.unzip
                         |> Tuple.mapSecond List.concat
             in
@@ -317,10 +480,10 @@ expressionToString scopeVariables expression =
         Expression.Application (functionExpression :: arguments) ->
             let
                 ( functionName, functionDependencies ) =
-                    expressionToString scopeVariables functionExpression
+                    expressionToString model elmFile scopeVariables functionExpression
 
                 ( argumentExpressions, argumentDependencies ) =
-                    List.map (expressionToString scopeVariables) arguments
+                    List.map (expressionToString model elmFile scopeVariables) arguments
                         |> List.unzip
                         |> Tuple.mapSecond List.concat
             in
@@ -331,42 +494,42 @@ expressionToString scopeVariables expression =
         Expression.OperatorApplication operator _ leftExpression rightExpression ->
             let
                 ( leftString, leftDependencies ) =
-                    expressionToString scopeVariables leftExpression
+                    expressionToString model elmFile scopeVariables leftExpression
 
                 ( rightString, rightDependencies ) =
-                    expressionToString scopeVariables rightExpression
+                    expressionToString model elmFile scopeVariables rightExpression
             in
             ( leftString ++ " " ++ operator ++ " " ++ rightString
             , leftDependencies ++ rightDependencies
             )
 
-        Expression.FunctionOrValue moduleName functionOrValue ->
-            let
-                ( path, dependencies ) =
-                    case ( moduleName, List.member functionOrValue scopeVariables ) of
-                        ( [], True ) ->
-                            ( [], [] )
+        Expression.FunctionOrValue functionOrValueModuleName functionOrValue ->
+            case ( Dict.get functionOrValue model.exposingModuleName, functionOrValueModuleName, List.member functionOrValue scopeVariables ) of
+                ( _, [], True ) ->
+                    ( functionOrValue, [] )
 
-                        ( [], False ) ->
-                            ( [ "", "author", "project", "Main" ], [ functionOrValue ] )
+                ( Just moduleName, _, False ) ->
+                    ( functionFullName moduleName functionOrValue, [ functionOrValue ] )
 
-                        ( [ "Cmd" ], _ ) ->
-                            ( [ "", "elm", "core", "Platform", "Cmd" ], [] )
+                ( _, [], False ) ->
+                    ( functionFullName elmFile.namespace functionOrValue, [ functionOrValue ] )
 
-                        ( [ "Sub" ], _ ) ->
-                            ( [ "", "elm", "core", "Platform", "Sub" ], [] )
+                ( Nothing, [ "Cmd" ], _ ) ->
+                    ( String.join "$" [ "", "elm", "core", "Platform", "Cmd", functionOrValue ], [] )
 
-                        _ ->
-                            ( [ "", "elm", "core" ] ++ moduleName, [] )
-            in
-            ( path
-                ++ [ functionOrValue ]
-                |> String.join "$"
-            , dependencies
-            )
+                ( Nothing, [ "Sub" ], _ ) ->
+                    ( String.join "$" [ "", "elm", "core", "Platform", "Sub", functionOrValue ], [] )
+
+                _ ->
+                    ( String.join "$" ([ "", "elm", "core" ] ++ functionOrValueModuleName ++ [ functionOrValue ]), [] )
 
         Expression.Integer integer ->
             ( String.fromInt integer
+            , []
+            )
+
+        Expression.Literal literal ->
+            ( "\"" ++ literal ++ "\""
             , []
             )
 
@@ -374,19 +537,19 @@ expressionToString scopeVariables expression =
             variables
                 |> List.indexedMap
                     (\index variable ->
-                        expressionToString scopeVariables variable
+                        expressionToString model elmFile scopeVariables variable
                             |> Tuple.mapFirst ((++) (smallVar index ++ ": "))
                     )
                 |> List.unzip
                 |> Tuple.mapBoth (\varStrings -> "{ " ++ String.join ", " varStrings ++ " }") List.concat
 
         Expression.ParenthesizedExpression parenthesizedExpression ->
-            expressionToString scopeVariables parenthesizedExpression
+            expressionToString model elmFile scopeVariables parenthesizedExpression
 
         Expression.CaseExpression caseBlock ->
             let
                 ( caseBlockExpression, caseBlockDependencies ) =
-                    expressionToString scopeVariables caseBlock.expression
+                    expressionToString model elmFile scopeVariables caseBlock.expression
 
                 ( cases, caseDependencies ) =
                     caseBlock.cases
@@ -428,7 +591,7 @@ expressionToString scopeVariables expression =
                                                 ( "/* TODO CaseExpression (" ++ Debug.toString debugArgument ++ ") */", "", [] )
 
                                     ( blockString, blockDependencies ) =
-                                        expressionToString (scopeVariables ++ argumentScopeVariables) block
+                                        expressionToString model elmFile (scopeVariables ++ argumentScopeVariables) block
                                 in
                                 ( "if(" ++ caseBlockExpression ++ ".$ === " ++ argumentIdentifier ++ ") { " ++ argumentAssignments ++ " return " ++ blockString ++ "; }"
                                 , blockDependencies
@@ -447,7 +610,7 @@ expressionToString scopeVariables expression =
                     List.indexedMap argumentToString lambda.args
 
                 ( lambdaExpression, lambdaDependencies ) =
-                    expressionToString lambdaArgs lambda.expression
+                    expressionToString model elmFile lambdaArgs lambda.expression
             in
             ( "function(" ++ String.join ", " lambdaArgs ++ ") { return " ++ lambdaExpression ++ "; }"
             , lambdaDependencies
@@ -461,7 +624,7 @@ expressionToString scopeVariables expression =
                             (\(Node _ ( Node _ name, value )) ->
                                 let
                                     ( valueString, valueDependencies ) =
-                                        expressionToString scopeVariables value
+                                        expressionToString model elmFile scopeVariables value
                                 in
                                 ( name ++ ": " ++ valueString
                                 , valueDependencies
@@ -486,7 +649,7 @@ expressionToString scopeVariables expression =
 
 subscriptions : Sub Msg
 subscriptions =
-    convert Convert
+    convert (\_ -> Convert)
 
 
 

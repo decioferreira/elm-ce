@@ -4,11 +4,11 @@ class ElmMake {
   constructor(elmFiles, params = {}) {
     this.elmEvancz = coffee.spawn(
       "./specs/helpers/elm-evancz-make.js",
-      elmFiles.map(elmFile => `specs/assets/elm/${elmFile}`)
+      elmFiles.map(elmFile => `specs/assets/src/${elmFile}`)
     );
     this.elmCE = coffee.spawn(
       "./lib/tasks/elm-ce-make.js",
-      elmFiles.map(elmFile => `specs/assets/elm/${elmFile}`)
+      elmFiles.map(elmFile => `specs/assets/src/${elmFile}`)
     );
   }
 

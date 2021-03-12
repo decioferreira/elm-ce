@@ -1,5 +1,10 @@
 port module Main exposing (main)
 
+import Helper
+import Nested.Something as NestedSomething
+
+
+
 -- INCOMING MESSAGES
 
 
@@ -7,6 +12,12 @@ port incomingAddOne : (Int -> msg) -> Sub msg
 
 
 port incomingOnePlusOne : (() -> msg) -> Sub msg
+
+
+port incomingAnswer : (() -> msg) -> Sub msg
+
+
+port incomingQuickBrownFox : (() -> msg) -> Sub msg
 
 
 
@@ -17,6 +28,12 @@ port outgoingAddOne : Int -> Cmd msg
 
 
 port outgoingOnePlusOne : Int -> Cmd msg
+
+
+port outgoingAnswer : Int -> Cmd msg
+
+
+port outgoingQuickBrownFox : String -> Cmd msg
 
 
 
@@ -40,6 +57,8 @@ onePlusOne =
 type Msg
     = AddOne Int
     | OnePlusOne
+    | Answer
+    | QuickBrownFox
 
 
 main : Program () () Msg
@@ -60,10 +79,18 @@ update msg model =
         OnePlusOne ->
             ( model, outgoingOnePlusOne onePlusOne )
 
+        Answer ->
+            ( model, outgoingAnswer Helper.answer )
+
+        QuickBrownFox ->
+            ( model, outgoingQuickBrownFox NestedSomething.quickBrownFox )
+
 
 subscriptions : () -> Sub Msg
 subscriptions model =
     Sub.batch
         [ incomingAddOne AddOne
         , incomingOnePlusOne (\_ -> OnePlusOne)
+        , incomingAnswer (\_ -> Answer)
+        , incomingQuickBrownFox (\_ -> QuickBrownFox)
         ]

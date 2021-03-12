@@ -47,3 +47,16 @@ test("addOne(2) to equal 3", done => {
     done: done
   });
 });
+
+test("answer() to equal 42", done => {
+  runBoth({
+    incomingPort: "incomingAnswer",
+    outgoingPort: "outgoingAnswer",
+    sendParam: null,
+    callback: (result, resolve) => {
+      expect(result).toBe(42);
+      resolve();
+    },
+    done: done
+  });
+});

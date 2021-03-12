@@ -1,9 +1,9 @@
 {
   "license": "BSD-3-Clause",
   "scripts": {
-    "elm-evancz": "elm make specs/assets/elm/Main.elm --optimize --output=tmp/specs-elm-evancz.js",
+    "elm-evancz": "cd specs/assets && elm make src/Main.elm --optimize --output=../../tmp/specs-elm-evancz.js && cd ../..",
     "preelm-ce": "elm make src/Main.elm --debug --output=tmp/elm-ce.js",
-    "elm-ce": "./lib/tasks/elm-ce-make.js specs/assets/elm/Main.elm --output=tmp/specs-elm-ce.js",
+    "elm-ce": "cd specs/assets && ../../lib/tasks/elm-ce-make.js src/Main.elm --output=../../tmp/specs-elm-ce.js && cd ../..",
     "elm-test": "elm-test src/**/*.elm",
     "prespec": "yarn elm-evancz && yarn elm-ce",
     "spec": "jest",
@@ -17,7 +17,8 @@
     "prettier": "2.2.1"
   },
   "dependencies": {
-    "commander": "^7.1.0"
+    "commander": "^7.1.0",
+    "glob": "^7.1.6"
   },
   "jest": {
     "testTimeout": 1500
