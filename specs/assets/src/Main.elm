@@ -1,5 +1,6 @@
 port module Main exposing (main)
 
+import Array
 import Helper
 import Nested.Something as NestedSomething
 
@@ -51,6 +52,37 @@ onePlusOne =
 
 
 
+-- SYNTAX
+
+
+syntaxExamples : ()
+syntaxExamples =
+    let
+        _ =
+            { unit = unit
+            , addApplication = addApplication
+            , addOperatorApplication = addOperatorApplication
+            }
+    in
+    ()
+
+
+unit : ()
+unit =
+    ()
+
+
+addApplication : Int
+addApplication =
+    addOperatorApplication 1 2
+
+
+addOperatorApplication : Int -> Int -> Int
+addOperatorApplication a b =
+    a + b
+
+
+
 -- MAIN
 
 
@@ -63,6 +95,11 @@ type Msg
 
 main : Program () () Msg
 main =
+    let
+        _ =
+            -- required so that elm does not drop the code
+            syntaxExamples
+    in
     Platform.worker
         { init = \_ -> ( (), Cmd.none )
         , update = update

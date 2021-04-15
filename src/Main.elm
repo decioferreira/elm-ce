@@ -4,12 +4,13 @@ import Array exposing (Array)
 import Dict exposing (Dict)
 import Elm.Parser
 import Elm.Processing
-import Elm.Syntax.Declaration as Declaration
+import Elm.Syntax.Declaration as Declaration exposing (Declaration)
 import Elm.Syntax.Exposing as Exposing
 import Elm.Syntax.Expression as Expression exposing (Expression)
 import Elm.Syntax.File as ElmSyntax
 import Elm.Syntax.Infix as Infix
 import Elm.Syntax.Module as Module
+import Elm.Syntax.ModuleName exposing (ModuleName)
 import Elm.Syntax.Node as Node exposing (Node(..))
 import Elm.Syntax.Pattern as Pattern exposing (Pattern)
 import Elm.Syntax.Range as Range
@@ -106,16 +107,14 @@ decodeSourceFiles =
 
 type alias SourceFile =
     { namespace : List String
-    , path : String
     , source : String
     }
 
 
 decodeSourceFile : Decode.Decoder SourceFile
 decodeSourceFile =
-    Decode.map3 SourceFile
+    Decode.map2 SourceFile
         (Decode.field "namespace" (Decode.list Decode.string))
-        (Decode.field "path" Decode.string)
         (Decode.field "source" Decode.string)
 
 
@@ -154,14 +153,20 @@ sourceFileParser sourceFile =
                                 Debug.todo "Exposing.All"
 
                             Exposing.Explicit declarations ->
-                                List.filterMap
+                                List.concatMap
                                     (\declaration ->
                                         case Node.value declaration of
-                                            Exposing.FunctionExpose functionExpose ->
-                                                Just functionExpose
+                                            Exposing.InfixExpose infixExpose ->
+                                                [ "(" ++ infixExpose ++ ")" ]
 
-                                            _ ->
-                                                Debug.todo "Exposing.Explicit"
+                                            Exposing.FunctionExpose functionExpose ->
+                                                [ functionExpose ]
+
+                                            Exposing.TypeOrAliasExpose typeOrAliasExpose ->
+                                                []
+
+                                            Exposing.TypeExpose exposedType ->
+                                                []
                                     )
                                     declarations
                   }
@@ -195,19 +200,10 @@ type alias Model =
     }
 
 
-type alias ModuleName =
-    List String
-
-
 type alias ElmFile =
     { namespace : List String
     , file : ElmSyntax.File
     }
-
-
-functionFullName : ModuleName -> String -> String
-functionFullName moduleName name =
-    String.join "$" ("" :: moduleName ++ [ name ])
 
 
 
@@ -251,12 +247,22 @@ elmFileToCode model elmFile =
                             functionDeclaration =
                                 Node.value function.declaration
 
-                            functionArguments =
+                            ( functionArguments, functionVars ) =
                                 functionDeclaration.arguments
                                     |> List.indexedMap argumentToString
+                                    |> List.unzip
 
                             name =
                                 Node.value functionDeclaration.name
+
+                            _ =
+                                ( elmFile.namespace, function.declaration )
+                                    |> (if functionFullName elmFile.namespace name == "$author$project$Main$addOperatorApplication" then
+                                            Debug.log "$author$project$Main$addOperatorApplication"
+
+                                        else
+                                            identity
+                                       )
 
                             ( expressionString, expressionDependencies ) =
                                 expressionToString model elmFile functionArguments functionDeclaration.expression
@@ -419,6 +425,12 @@ functionWrapper arguments return code =
 functionShouldReturn : Node Expression -> Bool
 functionShouldReturn expression =
     case Node.value expression of
+        Expression.IfBlock _ _ _ ->
+            False
+
+        Expression.LetExpression _ ->
+            False
+
         Expression.CaseExpression _ ->
             False
 
@@ -439,43 +451,52 @@ _Platform_export({'Main':{'init':$author$project$Main$main($elm$json$Json$Decode
 """
 
 
-argumentToString : Int -> Node Pattern -> String
+argumentToString : Int -> Node Pattern -> ( String, List String )
 argumentToString index argument =
     case Node.value argument of
         Pattern.AllPattern ->
-            "_v" ++ String.fromInt index
+            ( "_v" ++ String.fromInt index, [] )
 
         Pattern.VarPattern name ->
-            name
+            ( name, [] )
 
         Pattern.NamedPattern qualifiedNameRef arguments ->
-            String.join "$" (qualifiedNameRef.moduleName ++ [ qualifiedNameRef.name ])
-                ++ "("
-                ++ String.join ", " (List.indexedMap argumentToString arguments)
-                ++ ")"
+            ( "_v" ++ String.fromInt index
+            , arguments
+                |> List.indexedMap
+                    (\namedPatternIndex (Node _ namedPatternArgument) ->
+                        case namedPatternArgument of
+                            Pattern.VarPattern name ->
+                                "var "
+                                    ++ name
+                                    ++ " = "
+                                    ++ "_v"
+                                    ++ String.fromInt index
+                                    ++ "."
+                                    ++ smallVar namedPatternIndex
+                                    ++ ";"
+
+                            debugNamedPatternArgument ->
+                                "/* TODO Pattern.NamedPattern (" ++ Debug.toString debugNamedPatternArgument ++ ") */"
+                    )
+            )
+
+        Pattern.AsPattern asPattern (Node _ x) ->
+            argumentToString index asPattern
+                |> Tuple.mapFirst (\_ -> x)
+
+        Pattern.ParenthesizedPattern parenthesizedPattern ->
+            argumentToString index parenthesizedPattern
 
         debugArgument ->
-            "/* TODO argumentToString (" ++ Debug.toString debugArgument ++ ") */"
+            ( "/* TODO argumentToString (" ++ Debug.toString debugArgument ++ ") */", [] )
 
 
 expressionToString : Model -> ElmFile -> List String -> Node Expression -> ( String, List String )
 expressionToString model elmFile scopeVariables expression =
     case Node.value expression of
         Expression.UnitExpr ->
-            ( "0"
-            , []
-            )
-
-        Expression.ListExpr listExpr ->
-            let
-                ( listElements, dependencies ) =
-                    List.map (expressionToString model elmFile scopeVariables) listExpr
-                        |> List.unzip
-                        |> Tuple.mapSecond List.concat
-            in
-            ( "_List_fromArray([" ++ String.join ", " listElements ++ "])"
-            , dependencies
-            )
+            ( "0", [] )
 
         Expression.Application (functionExpression :: arguments) ->
             let
@@ -491,7 +512,31 @@ expressionToString model elmFile scopeVariables expression =
             , functionDependencies ++ argumentDependencies
             )
 
-        Expression.OperatorApplication operator _ leftExpression rightExpression ->
+        Expression.OperatorApplication "|>" _ leftExpression rightExpression ->
+            let
+                ( leftString, leftDependencies ) =
+                    expressionToString model elmFile scopeVariables leftExpression
+
+                ( rightString, rightDependencies ) =
+                    expressionToString model elmFile scopeVariables rightExpression
+            in
+            ( rightString ++ "(" ++ leftString ++ ")"
+            , leftDependencies ++ rightDependencies
+            )
+
+        Expression.OperatorApplication "<|" _ leftExpression rightExpression ->
+            let
+                ( leftString, leftDependencies ) =
+                    expressionToString model elmFile scopeVariables leftExpression
+
+                ( rightString, rightDependencies ) =
+                    expressionToString model elmFile scopeVariables rightExpression
+            in
+            ( leftString ++ "(" ++ rightString ++ ")"
+            , leftDependencies ++ rightDependencies
+            )
+
+        Expression.OperatorApplication operator infixDirection leftExpression rightExpression ->
             let
                 ( leftString, leftDependencies ) =
                     expressionToString model elmFile scopeVariables leftExpression
@@ -509,10 +554,10 @@ expressionToString model elmFile scopeVariables expression =
                     ( functionOrValue, [] )
 
                 ( Just moduleName, _, False ) ->
-                    ( functionFullName moduleName functionOrValue, [ functionOrValue ] )
+                    ( functionFullName moduleName functionOrValue, [ functionFullName moduleName functionOrValue ] )
 
                 ( _, [], False ) ->
-                    ( functionFullName elmFile.namespace functionOrValue, [ functionOrValue ] )
+                    ( functionFullName elmFile.namespace functionOrValue, [ functionFullName elmFile.namespace functionOrValue ] )
 
                 ( Nothing, [ "Cmd" ], _ ) ->
                     ( String.join "$" [ "", "elm", "core", "Platform", "Cmd", functionOrValue ], [] )
@@ -523,15 +568,41 @@ expressionToString model elmFile scopeVariables expression =
                 _ ->
                     ( String.join "$" ([ "", "elm", "core" ] ++ functionOrValueModuleName ++ [ functionOrValue ]), [] )
 
-        Expression.Integer integer ->
-            ( String.fromInt integer
-            , []
+        Expression.IfBlock condition ifBlock elseBlock ->
+            let
+                ( conditionString, conditionDependencies ) =
+                    expressionToString model elmFile scopeVariables condition
+
+                ( ifBlockString, ifBlockDependencies ) =
+                    expressionToString model elmFile scopeVariables ifBlock
+
+                ( elseBlockString, elseBlockDependencies ) =
+                    expressionToString model elmFile scopeVariables elseBlock
+            in
+            ( "if(" ++ conditionString ++ ") {" ++ ifBlockString ++ "} else {" ++ elseBlockString ++ "}"
+            , conditionDependencies ++ ifBlockDependencies ++ elseBlockDependencies
             )
 
+        -- Expression.PrefixOperator _ ->
+        -- Expression.Operator _ ->
+        Expression.Integer integer ->
+            ( String.fromInt integer, [] )
+
+        Expression.Hex hexInteger ->
+            ( "0x" ++ String.fromInt hexInteger, [] )
+
+        Expression.Floatable float ->
+            ( String.fromFloat float, [] )
+
+        Expression.Negation negationExpression ->
+            expressionToString model elmFile scopeVariables negationExpression
+                |> Tuple.mapFirst ((++) "-")
+
         Expression.Literal literal ->
-            ( "\"" ++ literal ++ "\""
-            , []
-            )
+            ( "\"" ++ literal ++ "\"", [] )
+
+        Expression.CharLiteral charLiteral ->
+            ( "\"" ++ String.fromChar charLiteral ++ "\"", [] )
 
         Expression.TupledExpression variables ->
             variables
@@ -545,6 +616,10 @@ expressionToString model elmFile scopeVariables expression =
 
         Expression.ParenthesizedExpression parenthesizedExpression ->
             expressionToString model elmFile scopeVariables parenthesizedExpression
+
+        Expression.LetExpression letBlock ->
+            -- TODO let declarations
+            expressionToString model elmFile scopeVariables letBlock.expression
 
         Expression.CaseExpression caseBlock ->
             let
@@ -606,41 +681,46 @@ expressionToString model elmFile scopeVariables expression =
 
         Expression.LambdaExpression lambda ->
             let
-                lambdaArgs =
-                    List.indexedMap argumentToString lambda.args
-
-                ( lambdaExpression, lambdaDependencies ) =
-                    expressionToString model elmFile lambdaArgs lambda.expression
+                ( lambdaArgs, lambdaVars ) =
+                    lambda.args
+                        |> List.indexedMap argumentToString
+                        |> List.unzip
             in
-            ( "function(" ++ String.join ", " lambdaArgs ++ ") { return " ++ lambdaExpression ++ "; }"
-            , lambdaDependencies
-            )
+            expressionToString model elmFile lambdaArgs lambda.expression
+                |> Tuple.mapFirst (\lambdaExpression -> "function(" ++ String.join ", " lambdaArgs ++ ") { return " ++ lambdaExpression ++ "; }")
 
         Expression.RecordExpr recordSetters ->
-            let
-                ( recordSettersList, recordSettersDependencies ) =
-                    recordSetters
-                        |> List.map
-                            (\(Node _ ( Node _ name, value )) ->
-                                let
-                                    ( valueString, valueDependencies ) =
-                                        expressionToString model elmFile scopeVariables value
-                                in
-                                ( name ++ ": " ++ valueString
-                                , valueDependencies
-                                )
-                            )
-                        |> List.unzip
-                        |> Tuple.mapSecond List.concat
-            in
-            ( "{ " ++ String.join ", " recordSettersList ++ " }"
-            , recordSettersDependencies
-            )
+            recordSetters
+                |> List.map
+                    (\(Node _ ( Node _ name, value )) ->
+                        let
+                            ( valueString, valueDependencies ) =
+                                expressionToString model elmFile scopeVariables value
+                        in
+                        ( name ++ ": " ++ valueString
+                        , valueDependencies
+                        )
+                    )
+                |> List.unzip
+                |> Tuple.mapSecond List.concat
+                |> Tuple.mapFirst (\recordSettersList -> "{ " ++ String.join ", " recordSettersList ++ " }")
 
+        Expression.ListExpr listExpr ->
+            List.map (expressionToString model elmFile scopeVariables) listExpr
+                |> List.unzip
+                |> Tuple.mapBoth
+                    (\listElements -> "_List_fromArray([" ++ String.join ", " listElements ++ "])")
+                    List.concat
+
+        Expression.RecordAccess recordAccessExpression (Node _ accessor) ->
+            expressionToString model elmFile scopeVariables recordAccessExpression
+                |> Tuple.mapFirst (\recordAccessExpressionString -> recordAccessExpressionString ++ "." ++ accessor)
+
+        -- Expression.RecordAccessFunction _ ->
+        -- Expression.RecordUpdateExpression _ _ ->
+        -- Expression.GLSLExpression _ ->
         debugExpression ->
-            ( "/* TODO expressionToString (" ++ Debug.toString debugExpression ++ ") */"
-            , []
-            )
+            ( "/* TODO expressionToString (" ++ Debug.toString debugExpression ++ ") */", [] )
 
 
 
@@ -682,6 +762,128 @@ validVarChars =
     Array.fromList [ 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z' ]
 
 
+functionFullName : ModuleName -> String -> String
+functionFullName moduleName name =
+    String.join "$" ("" :: moduleName ++ [ name ])
+
+
+
+-- JAVASCRIPT
+
+
+type alias JSTopLevelStatement =
+    { name : String
+    , value : JSTopLevelValue
+    }
+
+
+type JSTopLevelValue
+    = JSTopLevelVariable String
+    | JSTopLevelFunctionCall (List String)
+    | JSTopLevelFunctionDefinition
+        { arguments : List String
+        }
+
+
+functionImplementationToJavaScript : ModuleName -> Node Expression.FunctionImplementation -> JSTopLevelStatement
+functionImplementationToJavaScript moduleName (Node _ functionImplementation) =
+    { name = functionFullName moduleName (Node.value functionImplementation.name)
+    , value =
+        case Node.value functionImplementation.expression of
+            Expression.UnitExpr ->
+                JSTopLevelVariable "_Utils_Tuple0"
+
+            Expression.Application ((Node _ (Expression.FunctionOrValue [] name)) :: arguments) ->
+                JSTopLevelFunctionCall (functionFullName moduleName name :: List.map applicationArgumentToJavaScript arguments)
+
+            _ ->
+                Debug.todo "functionImplementationToJavaScript.value"
+    }
+
+
+applicationArgumentToJavaScript : Node Expression -> String
+applicationArgumentToJavaScript argument =
+    case Node.value argument of
+        Expression.Integer integer ->
+            String.fromInt integer
+
+        _ ->
+            Debug.todo "applicationArgumentToJavaScript"
+
+
+
+-- JAVASCRIPT :: TESTS
+
+
+functionImplementationToJavaScriptTests : Test
+functionImplementationToJavaScriptTests =
+    Test.describe "functionImplementationToJavaScript"
+        [ Test.test "UnitExpr" <|
+            \_ ->
+                Expect.equal
+                    (functionImplementationToJavaScript [ "author", "project", "Main" ]
+                        (Node Range.emptyRange
+                            { arguments = []
+                            , expression = Node Range.emptyRange Expression.UnitExpr
+                            , name = Node Range.emptyRange "unit"
+                            }
+                        )
+                    )
+                    { name = "$author$project$Main$unit"
+                    , value = JSTopLevelVariable "_Utils_Tuple0"
+                    }
+        , Test.test "Application" <|
+            \_ ->
+                Expect.equal
+                    (functionImplementationToJavaScript [ "author", "project", "Main" ]
+                        (Node Range.emptyRange
+                            { arguments = []
+                            , expression =
+                                Node Range.emptyRange
+                                    (Expression.Application
+                                        [ Node Range.emptyRange (Expression.FunctionOrValue [] "addOperatorApplication")
+                                        , Node Range.emptyRange (Expression.Integer 1)
+                                        , Node Range.emptyRange (Expression.Integer 2)
+                                        ]
+                                    )
+                            , name = Node Range.emptyRange "addApplication"
+                            }
+                        )
+                    )
+                    { name = "$author$project$Main$addApplication"
+                    , value = JSTopLevelFunctionCall [ "$author$project$Main$addOperatorApplication", "1", "2" ]
+                    }
+        , Test.test "OperatorApplication" <|
+            \_ ->
+                Expect.equal
+                    (functionImplementationToJavaScript [ "author", "project", "Main" ]
+                        (Node Range.emptyRange
+                            { arguments =
+                                [ Node Range.emptyRange (Pattern.VarPattern "a")
+                                , Node Range.emptyRange (Pattern.VarPattern "b")
+                                ]
+                            , expression =
+                                Node Range.emptyRange
+                                    (Expression.OperatorApplication "+"
+                                        Infix.Left
+                                        (Node Range.emptyRange (Expression.FunctionOrValue [] "a"))
+                                        (Node Range.emptyRange (Expression.FunctionOrValue [] "b"))
+                                    )
+                            , name = Node Range.emptyRange "addOperatorApplication"
+                            }
+                        )
+                    )
+                    { name = "$author$project$Main$addOperatorApplication"
+                    , value =
+                        JSTopLevelFunctionDefinition
+                            { arguments = [ "a", "b" ]
+
+                            -- TODO
+                            }
+                    }
+        ]
+
+
 
 -- TESTS
 
@@ -690,6 +892,7 @@ allTests : Test
 allTests =
     Test.describe "Elm Community Edition"
         [ argumentToStringTests
+        , functionImplementationToJavaScriptTests
         , smallVarTests
         ]
 
@@ -701,7 +904,7 @@ argumentToStringTests =
             \_ ->
                 Expect.equal
                     (argumentToString 0 (Node Range.emptyRange Pattern.AllPattern))
-                    "_v0"
+                    ( "_v0", [] )
         ]
 
 
