@@ -8,7 +8,6 @@ import Elm.Syntax.Declaration as Declaration
 import Elm.Syntax.Exposing as Exposing
 import Elm.Syntax.Expression as Expression exposing (Expression)
 import Elm.Syntax.File as ElmSyntax
-import Elm.Syntax.Infix as Infix
 import Elm.Syntax.Module as Module
 import Elm.Syntax.Node as Node exposing (Node(..))
 import Elm.Syntax.Pattern as Pattern exposing (Pattern)
@@ -553,8 +552,8 @@ expressionToString model elmFile scopeVariables expression =
 
                 ( cases, caseDependencies ) =
                     caseBlock.cases
-                        |> List.indexedMap
-                            (\index ( argument, block ) ->
+                        |> List.map
+                            (\( argument, block ) ->
                                 let
                                     ( argumentIdentifier, argumentAssignments, argumentScopeVariables ) =
                                         case Node.value argument of
